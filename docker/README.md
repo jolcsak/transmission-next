@@ -83,6 +83,11 @@ használja az elérhető AES-gyorsítást. A VPN-felügyelő nem kérdezget kül
 a Transmission saját IP-felderítése megmarad. Build/Node eszközök nem kerülnek a runtime-ba.
 A healthcheck nem készít login-eseményeket. Runtime logok /run tmpfs-ben, Docker logok rotálva.
 A HDD/SSD profilok megmaradnak; virtuális lemeznél a fizikai típus nem mindig látszik.
+Az alap belső írási cache 16 MiB, az új profilok 64 globális és torrentenként 24 peerrel,
+másodpercenként legfeljebb 3 új kapcsolódással indulnak. A Compose-minták 512 MiB
+memórialimitet és 192 MiB soft reservation értéket használnak. A DSM teljes
+konténermemóriája a folyamatok RSS-e mellett a visszanyerhető Linux fájlcache-t is
+tartalmazza; terhelés alatt a limit ezt automatikusan visszaszorítja.
 
 ```sh
 docker buildx build --platform linux/amd64 --build-arg BUILD_JOBS=2 \

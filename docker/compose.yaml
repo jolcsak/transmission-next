@@ -4,6 +4,9 @@ services:
     platform: linux/amd64
     restart: unless-stopped
     stop_grace_period: 120s
+    mem_limit: 512m
+    mem_reservation: 192m
+    pids_limit: 128
     ports:
       - "9091:9091"
       - "51413:51413"
@@ -12,8 +15,8 @@ services:
       - ./config:/config
       - ./downloads:/downloads
     tmpfs:
-      - /run:rw,nosuid,nodev,size=32m,mode=755
-      - /tmp:rw,nosuid,nodev,size=32m,mode=1777
+      - /run:rw,nosuid,nodev,size=16m,mode=755
+      - /tmp:rw,nosuid,nodev,size=16m,mode=1777
     logging:
       driver: json-file
       options:
