@@ -4,9 +4,10 @@ import io
 import json
 import os
 from pathlib import Path
+import stat
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 spec = importlib.util.spec_from_file_location('entrypoint', Path(__file__).with_name('entrypoint.py'))
 entry = importlib.util.module_from_spec(spec)
@@ -91,6 +92,27 @@ class StartupDiagnosticsTests(unittest.TestCase):
     def test_vpn_explicit_modes(self):
         self.assertTrue(entry.vpn_requested({}, {'VPN_ENABLED': 'true'}))
         self.assertFalse(entry.vpn_requested({'openvpn_config': '/config/vpn.ovpn'}, {'VPN_ENABLED': 'false'}))
+
+    def test_missing_tun_device_is_created_with_standard_device_number(self):
+        path = Mock()
+        path.parent = Mock()
+        path.exists.return_value = False
+        path.is_symlink.return_value = False
+        path.parent.lstat.return_value = Mock(st_mode=stat.S_IFDIR | 0o755)
+        path.lstat.return_value = Mock(st_mode=stat.S_IFCHR | 0o600, st_rdev=os.makedev(10, 200))
+        with patch.object(entry.os, 'mknod') as mknod, patch.object(entry.os, 'chmod'):
+            entry.ensure_tun_device(path)
+        mknod.assert_called_once_with(path, stat.S_IFCHR | 0o600, os.makedev(10, 200))
+
+    def test_wrong_tun_device_is_rejected(self):
+        path = Mock()
+        path.parent = Mock()
+        path.exists.return_value = True
+        path.parent.lstat.return_value = Mock(st_mode=stat.S_IFDIR | 0o755)
+        path.lstat.return_value = Mock(st_mode=stat.S_IFREG | 0o600, st_rdev=0)
+        with self.assertRaises(entry.StartupError) as caught:
+            entry.ensure_tun_device(path)
+        self.assertEqual(caught.exception.code, 'tun_device_invalid')
 
     def test_partial_vpn_config_remains_protected(self):
         for config in ({'openvpn_config': '/missing.ovpn'}, {'username': 'fixture'}, {'password': 'fixture'}):

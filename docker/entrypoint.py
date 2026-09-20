@@ -145,6 +145,29 @@ def vpn_requested(config, environ=None):
         env.get('TRANSMISSION_VPN_' + key.upper()) for key in (*fields, 'username_file', 'password_file'))
 
 
+def ensure_tun_device(path=Path('/dev/net/tun')):
+    """Create the standard TUN node when DSM omits the device bind mapping."""
+    parent = path.parent
+    parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+    parent_info = parent.lstat()
+    if not stat.S_ISDIR(parent_info.st_mode) or stat.S_ISLNK(parent_info.st_mode):
+        raise StartupError('tun_device_parent_invalid', '/dev/net must be a real directory inside the container.')
+    if not path.exists() and not path.is_symlink():
+        try:
+            os.mknod(path, stat.S_IFCHR | 0o600, os.makedev(10, 200))
+        except (OSError, AttributeError):
+            raise StartupError('tun_device_unavailable',
+                               'DSM did not pass /dev/net/tun and the container could not create it. Add NET_ADMIN and map /dev/net/tun, or deploy with docker/compose.vpn.yaml.') from None
+    try:
+        info = path.lstat()
+    except OSError:
+        raise StartupError('tun_device_unavailable', '/dev/net/tun is unavailable inside the container.') from None
+    if (not stat.S_ISCHR(info.st_mode) or stat.S_ISLNK(info.st_mode) or
+            os.major(info.st_rdev) != 10 or os.minor(info.st_rdev) != 200):
+        raise StartupError('tun_device_invalid', '/dev/net/tun must be the standard TUN character device (10:200).')
+    os.chmod(path, 0o600)
+
+
 def vpn_probe_available():
     if not Path('/dev/net/tun').is_char_device():
         return False
@@ -222,6 +245,7 @@ def initialize():
         effective = resolve(config)
         if not (effective.get('openvpn_config') or effective.get('openvpn_profile')):
             raise StartupError('vpn_profile_missing', 'VPN is configured/enabled but no profile is provided. Set TRANSMISSION_VPN_OPENVPN_CONFIG or save a profile in vpn.json. No direct-network fallback was started.')
+        ensure_tun_device()
     (CONFIG / 'vpn-status.json').unlink(missing_ok=True)
     tls = CONFIG / 'tls'
     tls.mkdir(mode=0o700, exist_ok=True)
