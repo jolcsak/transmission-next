@@ -1,16 +1,17 @@
 export class RpcSecuritySettings {
-  constructor(remote) {
+  constructor(remote, onAccountChanged) {
     this.remote = remote;
+    this.onAccountChanged = onAccountChanged;
     this.root = document.createElement('details');
     this.root.className = 'dash-panel telemetry-settings rpc-security-settings';
-    this.root.innerHTML = `<summary>RPC hitelesítés</summary>
+    this.root.innerHTML = `<summary>Felhasználói fiók és RPC-hitelesítés</summary>
       <p>A Transmission RPC és webes felülete HTTP-hitelesítést kér. A jelszó csak egyszer jut el a daemonhoz, sózott ellenőrzőértékként mentődik, és sem lekérdezni, sem exportálni nem lehet.</p>
       <p class="rpc-security-state" role="status" aria-live="polite">Állapot lekérdezésekor jelenik meg.</p>
       <form><div class="telemetry-fields"><fieldset><legend>Belépési adatok</legend>
         <label>Felhasználónév <input name="username" type="text" minlength="1" maxlength="64" required autocomplete="username"></label>
         <label>Új jelszó <input name="password" type="password" minlength="8" maxlength="4096" required autocomplete="new-password"></label>
         <label>Új jelszó ismét <input name="password-confirmation" type="password" minlength="8" maxlength="4096" required autocomplete="new-password"></label>
-      </fieldset></div><div class="telemetry-actions"><button type="button" data-action="load">Állapot frissítése</button><button type="submit">Mentés és hitelesítés bekapcsolása</button></div></form>
+      </fieldset></div><div class="telemetry-actions"><button type="button" data-action="load">Állapot frissítése</button><button type="submit">Felhasználónév és jelszó mentése</button></div></form>
       <p class="telemetry-status" role="status" aria-live="polite"></p>`;
     this.form = this.root.querySelector('form');
     this.status = this.root.querySelector('.telemetry-status');
@@ -50,6 +51,7 @@ export class RpcSecuritySettings {
       ? `Hitelesítés aktív: ${username || 'névtelen fiók'}.`
       : 'Hitelesítés még nincs bekapcsolva. A daemon jelenleg csak a helyi gépről érhető el.';
     this.form.elements.username.value = username ?? '';
+    this.onAccountChanged?.({ enabled, username });
   }
 
   async load() {
@@ -72,7 +74,7 @@ export class RpcSecuritySettings {
     this.form.elements.password.value = '';
     this.form.elements['password-confirmation'].value = '';
     this.render(result);
-    this.status.textContent = `Mentve. A következő RPC-kérésnél a böngésző ${result.username} felhasználóval új bejelentkezést kér.`;
+    this.status.textContent = `Mentve. A fejlécben már a(z) ${result.username} fiók látható. A következő kérésnél a böngésző az új jelszót kérheti.`;
   }
 
   async perform(action) {

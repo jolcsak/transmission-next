@@ -4,6 +4,7 @@ import { VisibleInterval } from './visible-interval.js';
 import { StoragePanel } from './storage-panel.js';
 import { TelemetrySettings } from './telemetry-settings.js';
 import { RpcSecuritySettings } from './rpc-security-settings.js';
+import { AccountMenu } from './account-menu.js';
 import { VpnSettings } from './vpn-settings.js';
 import { LogPanel } from './log-panel.js';
 import { SecurityPanel } from './security-panel.js';
@@ -77,7 +78,9 @@ export class Dashboard {
       '<div class="dash-heading"><div><h1>Napló</h1><p>Transmission-üzenetek keresése, szűrése és rendezése.</p></div></div>';
     this.pages = { logs, overview, settings };
     this.root.append(overview, settings, logs);
-    this.rpcSecurity = new RpcSecuritySettings(this.remote);
+    this.rpcSecurity = new RpcSecuritySettings(this.remote, (account) =>
+      this.account?.render(account),
+    );
     settings.append(this.rpcSecurity.root);
     this.settings = new TelemetrySettings(this.remote);
     settings.append(this.settings.root);
@@ -88,7 +91,15 @@ export class Dashboard {
     this.navigation = document.createElement('header');
     this.navigation.className = 'app-navigation';
     this.navigation.lang = 'hu';
-    this.navigation.innerHTML = `<div class="app-brand"><span class="brand-mark" aria-hidden="true">T</span><div>Transmission<small>TRANSFER MANAGER</small></div></div><nav aria-label="Fő navigáció"><button type="button" data-view="overview" aria-controls="statistics-page" aria-current="page">Statisztikák</button><button type="button" data-view="settings" aria-controls="settings-page">Beállítások</button><button type="button" data-view="logs" aria-controls="logs-page">Napló</button><button type="button" data-view="torrents" aria-controls="mainwin-workarea">Torrentek</button></nav><span class="app-edition">LOCAL / v22</span>`;
+    this.navigation.innerHTML = `<div class="app-brand"><span class="brand-mark" aria-hidden="true">T</span><div>Transmission<small>TRANSFER MANAGER</small></div></div><nav aria-label="Fő navigáció"><button type="button" data-view="overview" aria-controls="statistics-page" aria-current="page">Statisztikák</button><button type="button" data-view="settings" aria-controls="settings-page">Beállítások</button><button type="button" data-view="logs" aria-controls="logs-page">Napló</button><button type="button" data-view="torrents" aria-controls="mainwin-workarea">Torrentek</button></nav><span class="app-edition">LOCAL / v23</span>`;
+    this.account = new AccountMenu(this.remote, {
+      onChangePassword: () => {
+        this.show('settings');
+        this.rpcSecurity.root.open = true;
+        this.rpcSecurity.form.elements.password.focus();
+      },
+    });
+    this.navigation.append(this.account.root);
     main.prepend(this.navigation, this.root);
     this.transferElements = [
       '#mainwin-toolbar',
@@ -111,6 +122,7 @@ export class Dashboard {
       });
     }
     this.show('overview');
+    this.account.load();
     this.interval = new VisibleInterval(
       () => this.refresh(),
       10_000,
