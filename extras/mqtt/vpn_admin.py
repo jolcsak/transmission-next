@@ -68,7 +68,12 @@ def test_connection(config, directory):
             try:
                 client.connect('/run/transmission-vpn-test-control/probe.sock')
             except OSError:
-                return {'state': 'error', 'message': 'A VPN-teszt segédszolgáltatás nem érhető el. Indítsd el a transmission-vpn-test szolgáltatást.'}
+                return {'state': 'error', 'message': (
+                    'A VPN-kapcsolatteszt socketje nem érhető el. Dockerben nincs külön '
+                    'transmission-vpn-test szolgáltatás: hozd létre újra ezt a konténert '
+                    '/dev/net/tun eszközzel, NET_ADMIN és SYS_ADMIN capabilitykkel, '
+                    'net.ipv4.ip_forward=1 beállítással és DSM-en AppArmor unconfined módban. '
+                    'Ezután a konténer automatikusan elindítja a tesztsegédet.')}
             client.sendall(payload)
             client.shutdown(socket.SHUT_WR)
             data = bytearray()

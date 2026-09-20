@@ -219,8 +219,13 @@ def main():
         from security_events import SecurityEvents
         SECURITY = SecurityEvents()
         spawn(unprivileged([str(ROOT / 'bin/transmission-daemon'), '--foreground', '--config-dir', '/config']), clean_env)
-    if enabled or vpn_probe_available():
+    probe_available = enabled or vpn_probe_available()
+    if probe_available:
         spawn(['python3', str(ROOT / 'extras/vpn/probe_service.py'), '--user', 'transmission'], clean_env)
+    else:
+        print('VPN connection test disabled: recreate the container with /dev/net/tun, '
+              'NET_ADMIN, SYS_ADMIN, net.ipv4.ip_forward=1 and DSM AppArmor unconfined. '
+              'No separate transmission-vpn-test container is required.', flush=True)
     spawn(['nginx', '-c', '/etc/transmission-rpc-tls/nginx.conf', '-g', 'daemon off;'], clean_env)
     admin = None
     security_entries = deque(maxlen=256)

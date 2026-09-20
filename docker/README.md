@@ -46,6 +46,9 @@ vagy használj inline CA-t. Profil/hitelesítés megadható a felületen, vpn.js
 vagy a TRANSMISSION_VPN_* env változókkal. A _USERNAME_FILE és _PASSWORD_FILE is támogatott.
 A webes kapcsolatteszt VPN nélküli induláskor is elérhető, ha a konténer már megkapta
 az ehhez szükséges eszközt és capabilityket. Egyébként ezeket előbb hozzá kell adni.
+A Docker image-ben nincs külön `transmission-vpn-test` konténer vagy systemd szolgáltatás:
+az entrypoint automatikusan elindítja a tétlenül várakozó tesztsegédet, ha a `/dev/net/tun`,
+`NET_ADMIN`, `SYS_ADMIN`, IPv4 forwarding és DSM-en az AppArmor unconfined beállítás elérhető.
 A VPN-beállítás mentése önmagában nem kapcsolja át a futó forgalmat; újraindítás kell.
 
 VPN-módban torrent, tracker, DHT, DNS és telemetriaexport a védett névtérben fut.

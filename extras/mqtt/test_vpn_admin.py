@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from admin import Supervisor, read, write
-from vpn_admin import defaults, validate
+from vpn_admin import defaults, test_connection, validate
 
 
 class VpnAdminTests(unittest.TestCase):
@@ -66,6 +66,16 @@ class VpnAdminTests(unittest.TestCase):
         self.assertEqual(result['state'], 'tested')
         self.assertEqual(result['job_id'], 'vpn-test')
         self.assertFalse((Path(self.temp.name)/'vpn.json').exists())
+
+    def test_missing_probe_explains_container_permissions(self):
+        with patch('vpn_admin.validate'), patch('vpn_admin.socket.socket') as socket_type:
+            socket_type.return_value.__enter__.return_value.connect.side_effect = FileNotFoundError()
+            result = test_connection(self.config, self.temp.name)
+        self.assertEqual(result['state'], 'error')
+        self.assertIn('/dev/net/tun', result['message'])
+        self.assertIn('NET_ADMIN', result['message'])
+        self.assertIn('SYS_ADMIN', result['message'])
+        self.assertIn('nincs külön transmission-vpn-test', result['message'])
 
     def test_environment_used_for_tests_but_not_persisted(self):
         self.manager.environ = {'TRANSMISSION_VPN_PASSWORD': 'env-only-secret',
