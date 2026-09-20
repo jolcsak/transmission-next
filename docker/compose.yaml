@@ -6,41 +6,16 @@ services:
     stop_grace_period: 120s
     ports:
       - "9091:9091"
-    cap_add:
-      - NET_ADMIN
-      - SYS_ADMIN
-    security_opt:
-      - apparmor:unconfined
-    devices:
-      - /dev/net/tun:/dev/net/tun
-    sysctls:
-      net.ipv4.ip_forward: "1"
-    tmpfs:
-      - /run:rw,nosuid,nodev,size=32m,mode=755
-      - /tmp:rw,nosuid,nodev,size=32m,mode=1777
-    environment:
-      VPN_ENABLED: "true"
-      RPC_USERNAME: "transmission"
-      RPC_PASSWORD_FILE: /run/secrets/rpc_password
-      TRANSMISSION_VPN_OPENVPN_CONFIG: /config/provider.ovpn
-      TRANSMISSION_VPN_USERNAME_FILE: /run/secrets/vpn_username
-      TRANSMISSION_VPN_PASSWORD_FILE: /run/secrets/vpn_password
-    secrets:
-      - rpc_password
-      - vpn_username
-      - vpn_password
+      - "51413:51413"
+      - "51413:51413/udp"
     volumes:
       - ./config:/config
       - ./downloads:/downloads
+    tmpfs:
+      - /run:rw,nosuid,nodev,size=32m,mode=755
+      - /tmp:rw,nosuid,nodev,size=32m,mode=1777
     logging:
       driver: json-file
       options:
         max-size: "5m"
         max-file: "2"
-secrets:
-  rpc_password:
-    file: ./secrets/rpc_password.txt
-  vpn_username:
-    file: ./secrets/vpn_username.txt
-  vpn_password:
-    file: ./secrets/vpn_password.txt

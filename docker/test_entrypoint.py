@@ -1,5 +1,6 @@
 """Regression tests for secret-free Docker startup diagnostics."""
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -40,8 +41,17 @@ class StartupDiagnosticsTests(unittest.TestCase):
         return entry.failure_message(caught.exception)
 
     def test_missing_rpc_password(self):
-        message = self.failure({}, 'rpc_password_missing')
-        self.assertIn('RPC_PASSWORD_FILE', message)
+        settings = {}
+        output = io.StringIO()
+        with patch('sys.stdout', output):
+            entry.initial_password(settings)
+            second = {}
+            entry.initial_password(second)
+        password = settings['rpc_password']
+        self.assertGreaterEqual(len(password), 24)
+        self.assertEqual(settings, second)
+        self.assertNotIn(password, output.getvalue())
+        self.assertEqual((self.config/'rpc-initial-password.txt').stat().st_mode & 0o777, 0o600)
 
     def test_short_password_not_logged(self):
         message = self.failure({'RPC_PASSWORD': 'private'}, 'rpc_password_invalid')
@@ -73,9 +83,32 @@ class StartupDiagnosticsTests(unittest.TestCase):
     def test_invalid_vpn_switch(self):
         self.failure({'RPC_PASSWORD': 'fixture-password', 'VPN_ENABLED': 'invalid'}, 'vpn_enabled_invalid')
 
-    def test_vpn_cannot_be_disabled_with_existing_config(self):
-        (self.config/'vpn.json').write_text('{}')
-        self.failure({'RPC_PASSWORD': 'fixture-password', 'VPN_ENABLED': 'false'}, 'vpn_disable_conflict')
+    def test_vpn_default_auto_without_config(self):
+        self.assertFalse(entry.vpn_requested({}, {}))
+        self.assertFalse(entry.vpn_requested(dict(provider='purevpn', openvpn_config='', credentials_file='',
+                                                 daemon='/old/bin', dns=['1.1.1.1']), {}))
+
+    def test_vpn_explicit_modes(self):
+        self.assertTrue(entry.vpn_requested({}, {'VPN_ENABLED': 'true'}))
+        self.assertFalse(entry.vpn_requested({'openvpn_config': '/config/vpn.ovpn'}, {'VPN_ENABLED': 'false'}))
+
+    def test_partial_vpn_config_remains_protected(self):
+        for config in ({'openvpn_config': '/missing.ovpn'}, {'username': 'fixture'}, {'password': 'fixture'}):
+            self.assertTrue(entry.vpn_requested(config, {}))
+        for name in ('USERNAME_FILE', 'PASSWORD_FILE', 'OPENVPN_CONFIG', 'OPENVPN_PROFILE'):
+            self.assertTrue(entry.vpn_requested({}, {'TRANSMISSION_VPN_' + name: 'fixture'}))
+        self.assertFalse(entry.vpn_requested({}, {'TRANSMISSION_VPN_PROVIDER': 'purevpn'}))
+
+    def test_blank_optional_secrets_are_unset(self):
+        with patch.dict(os.environ, {'RPC_PASSWORD': '', 'RPC_PASSWORD_FILE': ''}, clear=True):
+            self.assertIsNone(entry.secret('RPC_PASSWORD'))
+
+    def test_bootstrap_symlink_rejected(self):
+        target = self.root/'private'
+        target.write_text('fixture-password')
+        (self.config/'rpc-initial-password.txt').symlink_to(target)
+        with self.assertRaises(OSError):
+            entry.initial_password({})
 
     def test_incomplete_tls_pair(self):
         (self.config/'tls').mkdir()

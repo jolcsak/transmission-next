@@ -1,105 +1,90 @@
 # Transmission Next — linux/amd64
 
-A jelenlegi módosított Transmission teljes daemon/web/VPN/telemetria funkcióival.
-Image: `jolcsak/transmission-next:amd64`. HTTPS: `https://localhost:9091/transmission/web/`.
+Image: `jolcsak/transmission-next:amd64`. Web/RPC: `https://localhost:9091/transmission/web/`.
 
-## Indítás
+## Indulás kézi beállítások nélkül
 
-1. Másold a compose.yaml fájlt egy új könyvtárba.
-2. Hozd létre a `config`, `downloads`, `secrets` könyvtárakat.
-3. PureVPN OpenVPN-profil: `config/provider.ovpn`. A profil által hivatkozott
-   tanúsítványfájlokat is tedd mellé, vagy használj inline CA-t tartalmazó profilt.
-4. `secrets/rpc_password.txt`: saját RPC-jelszó, legalább 8 karakter.
-   `secrets/vpn_username.txt`, `secrets/vpn_password.txt`: PureVPN OpenVPN-hitelesítés.
-   Ezeket ne tedd Gitbe és ne építsd bele image-be; Linuxon jogosultságuk legyen 600.
-5. `docker compose up -d`.
-6. Saját TLS-tanúsítvány esetén indulás előtt helyezd el a `config/tls/server.crt`
-   és `config/tls/server.key` fájlokat. Egyébként az első indítás önaláírt,
-   gépenként új tanúsítványt készít localhost/transmission névre. LAN-használathoz
-   telepíts a kiszolgáló nevére kiadott tanúsítványt, és bízz meg a kibocsátóban.
-   A kliensben SSL/HTTPS és RPC-hitelesítés szükséges.
+A `compose.yaml` semmilyen kötelező környezeti változót vagy secret-fájlt nem kér.
+Másold egy saját könyvtárba, majd futtasd: `docker compose up -d`.
+A `config` és `downloads` könyvtár tartós adatokat tárol; frissítéskor tartsd meg őket.
 
-A supervisor rootként kezeli a hálózati névtereket, a Transmission és az admin/
-MQTT/Influx folyamat UID/GID 1000-ként, eldobott capabilitykkel fut. A config és
-letöltési gyökérkönyvtár tulajdonosát induláskor ehhez igazítjuk, rekurzív chown
-nincs. Meglévő letöltések jogosultságait előzetesen ehhez kell beállítani.
+- VPN-profil nélkül közvetlen hálózaton indul. MQTT/Influx export alapból kikapcsolva.
+- RPC-felhasználó: `transmission`. Ha még nincs jelszó, egyedi, erős jelszó készül
+  a `config/rpc-initial-password.txt` fájlba (konténerben `/config/rpc-initial-password.txt`, 600 jogosultság).
+  A jelszó nem kerül naplóba. Első belépés után a Beállítások / RPC hitelesítés résznél módosítható.
+  A fájl az eredeti kezdeti jelszót tartalmazza; a felületi módosítás nem írja át.
+- Meglévő RPC-jelszó/hash megmarad. A generált jelszó újraindításkor sem változik.
+- Saját tanúsítvány nélkül gépenként új önaláírt HTTPS-tanúsítvány készül.
+- A weben állíthatók a letöltési beállítások, a VPN-profil, MQTT és Influx.
+- A hiányzó beállítások alapértéket kapnak. A megadott, de hibás értékek javítandó
+  konfigurációs hibát jelentenek, nem kapcsoljuk ki helyettük a védelmet.
 
-A névterekhez NET_ADMIN, SYS_ADMIN, TUN eszköz és AppArmor mount-engedély kell;
-a példa AppArmor unconfined beállítást használ. Nincs privileged mód, host network,
-host PID vagy Docker socket mount. SYS_ADMIN ettől még széles jogosultság,
-csak megbízható image-et futtass ilyen beállítással.
+## Opcionális VPN
 
-## Konfiguráció és hálózat
+`VPN_ENABLED` alapértéke `auto` (elhagyható):
 
-- `/config`: settings.json, vpn.json, telemetry.json, torrentállapotok, TLS.
-- `/downloads`: tartós letöltések. További lemezek külön volume-ként csatolhatók.
-- A saját futó szerver konfigurációja, jelszavai, torrentjei és naplói nincsenek az image-ben.
-- A daemon útvonala/felhasználója/config és belső RPC-portja konténerfüggő, automatikus.
-- VPN alapértelmezés szerint kötelező. Hibánál a konténer leáll, nincs közvetlen fallback.
-- Kizárólag szándékos, tiszta VPN nélküli telepítéshez `VPN_ENABLED=false`.
-  Meglévő vpn.json vagy VPN env mellett ez hibát ad. Ilyenkor nem szükségesek
-  a VPN capabilityk/eszközök, de a peer-portot szükség esetén külön publikálni kell.
-- A 9091 port HTTPS admin/RPC. A 19091 belső backend portot ne publikáld.
-- VPN-módban a torrent, tracker, DHT, DNS és a telemetriaexport ugyanabban a védett
-  hálózati névtérben fut. A VPN felépítéséhez a VPN-kiszolgáló kezdeti DNS-feloldása
-  a konténer alap hálózatán történik. Az admin/RPC a publikált porton érhető el.
-- MQTT/Influx opcionális, a Beállítások oldalon vagy meglévő környezeti változókkal
-  állítható. VPN-módban csak az alagúton elérhető szerverek használhatók;
-  nincs automatikus LAN-kivétel, amely megkerülné a kill switchet.
-- Az RPC exporthitelesítést a telemetry.json rpc részében kell megadni,
-  URL: `http://127.0.0.1:19091/transmission/rpc`.
-- RPC_USERNAME, RPC_PASSWORD vagy RPC_PASSWORD_FILE az induláskor érvényesül.
-  Ha a felületen módosított jelszót szeretnéd megtartani, a régi indítási felülírást
-  vedd ki a compose-ból a következő indítás előtt.
-- A megszokott TRANSMISSION_VPN_* env változók megmaradtak; új opció a
-  TRANSMISSION_VPN_USERNAME_FILE és TRANSMISSION_VPN_PASSWORD_FILE.
-- A VPN profil/secret változtatása után `docker compose restart transmission`.
-- A daemon indulásához működő VPN-profil kell; hibás első konfigurációt fájlban/env-ben
-  javíts, mert a web/RPC daemon sem indul el védelem nélkül.
+- Profil/hitelesítés nélküli vagy régi, csak alapértékeket tartalmazó vpn.json: VPN nélkül indul.
+- VPN-profil vagy VPN-hitelesítés megadása: VPN szükséges; csak sikeres kapcsolat után indul a daemon.
+- Részleges, hibás, hiányzó fájlra mutató VPN-konfiguráció: nincs közvetlen hálózati fallback.
+- `VPN_ENABLED=true`: kifejezetten megköveteli a VPN-t.
+- `VPN_ENABLED=false`: kifejezett, szándékos kikapcsolás; közvetlen hálózati üzem.
 
-## Optimalizálás
+VPN-es telepítéshez külön példa: **compose.vpn.yaml**. A kezelt VPN-hez szükséges:
+NET_ADMIN és SYS_ADMIN capability, `/dev/net/tun`, IPv4 forwarding, és a hálózati
+névterekhez szükséges mount-engedély (a példa AppArmor unconfined beállítást használ).
+Nincs privileged mód, host network, host PID vagy Docker socket mount.
+A supervisor rootként kezeli a hálózatot; a daemon és a telemetria UID/GID 1000-ként,
+eldobott capabilitykkel fut. SYS_ADMIN széles jogosultság, megbízható image-hez használd.
 
-Natív amd64, GCC Release -O3, linkeléskori optimalizálás (LTO), stripped binárisok,
-x86-64 alaputasításkészlet és generic CPU-hangolás. Nincs `-march=native`, így az
-image nem függ a buildgép CPU-jától. OpenSSL saját futásidejű CPU-detektálása
-használja az elérhető AES-gyorsítást. A VPN-felügyelő nem kérdezget külső IP-szolgáltatást; a Transmission saját IP-felderítése megmarad.
-A build és Node eszközök külön stage-ben maradnak. A healthcheck nem küld hamis
-bejelentkezési kísérleteket. Runtime naplók /run tmpfs-ben, Docker logok rotálva.
-HDD/SSD automatikus profilok megmaradnak, de Docker Desktop virtuális lemezeknél
-nem feltétlenül látszik a fizikai adathordozó típusa; a mért terhelés is számít.
+PureVPN-profil: például `config/provider.ovpn`. A külső CA-fájlok legyenek mellette,
+vagy használj inline CA-t. Profil/hitelesítés megadható a felületen, vpn.json-ban,
+vagy a TRANSMISSION_VPN_* env változókkal. A _USERNAME_FILE és _PASSWORD_FILE is támogatott.
+A webes kapcsolatteszt VPN nélküli induláskor is elérhető, ha a konténer már megkapta
+az ehhez szükséges eszközt és capabilityket. Egyébként ezeket előbb hozzá kell adni.
+A VPN-beállítás mentése önmagában nem kapcsolja át a futó forgalmat; újraindítás kell.
 
-## Build és forrás
+VPN-módban torrent, tracker, DHT, DNS és telemetriaexport a védett névtérben fut.
+Kivétel a VPN-kiszolgáló kezdeti DNS-feloldása és a publikált admin/RPC elérés.
+MQTT/Influx esetén alagúton elérhető célpont szükséges; nincs automatikus LAN-kivétel.
 
-A forrásgyökérben:
+## Könyvtárak, portok és felülírások
+
+- `/config`: settings.json, vpn.json, telemetry.json, torrentállapotok és TLS.
+- `/downloads`: letöltések; további lemezek külön volume-ként csatolhatók.
+- A config/downloads gyökér tulajdonosa induláskor UID/GID 1000 lesz; rekurzív chown nincs.
+- 9091: HTTPS admin/RPC. 19091: belső backend, ne publikáld.
+- A közvetlen mód peer-portja alapból 51413 TCP/UDP; a minimális Compose publikálja.
+- VPN esetén ne publikálj közvetlen peer-portot; a szolgáltató oldali elérhetőség számít.
+- Saját TLS: `/config/tls/server.crt` és `/config/tls/server.key` együtt.
+  A generált tanúsítvány localhost/transmission névre szól; LAN-névhez saját tanúsítvány kell.
+- RPC_USERNAME, RPC_PASSWORD vagy RPC_PASSWORD_FILE: opcionális indulási felülírások.
+  Ha a felületen módosítasz jelszót, a régi env felülírást vedd ki a következő indítás előtt.
+- DOWNLOAD_DIR: opcionális; egyébként a meglévő settings.json értéke, majd `/downloads` érvényes.
+- Env-módosítás után újralétrehozás kell: `docker compose up -d`; sima restart nem veszi át az új env-t.
+- A konténer saját daemonútvonala/felhasználója/config és belső RPC-portja automatikus.
+- Telemetria API URL konténeren belül: `http://127.0.0.1:19091/transmission/rpc`;
+  az RPC-exporthoz szükséges hitelesítést a telemetriabeállításokban kell megadni.
+
+## Optimalizálás és build
+
+Natív amd64, Release -O3, LTO és stripped binárisok, x86-64 alaputasításkészlet,
+generic CPU-hangolás; nincs buildgéphez kötő march=native. OpenSSL saját CPU-detektálása
+használja az elérhető AES-gyorsítást. A VPN-felügyelő nem kérdezget külső IP-szolgáltatást;
+a Transmission saját IP-felderítése megmarad. Build/Node eszközök nem kerülnek a runtime-ba.
+A healthcheck nem készít login-eseményeket. Runtime logok /run tmpfs-ben, Docker logok rotálva.
+A HDD/SSD profilok megmaradnak; virtuális lemeznél a fizikai típus nem mindig látszik.
 
 ```sh
 docker buildx build --platform linux/amd64 --build-arg BUILD_JOBS=2 \
   --load -t jolcsak/transmission-next:amd64 .
 ```
 
-Az image-ben `/usr/share/transmission/source/transmission-source.tar.gz` tartalmazza
-az ehhez a buildhez használt módosított forrást és a buildreceptet.
-Kinyerés: `docker create --name tr-source jolcsak/transmission-next:amd64`,
-`docker cp tr-source:/usr/share/transmission/source/transmission-source.tar.gz .`,
-`docker rm -v tr-source`. Licencfájlok: `/usr/share/doc/transmission/`.
+A pontos forrás és buildrecept: `/usr/share/transmission/source/transmission-source.tar.gz`.
+Licencfájlok: `/usr/share/doc/transmission/`. Személyes config/torrent/VPN-adatok nincsenek az image-ben.
 
-A Docker minták alapjai: https://docs.docker.com/engine/containers/run/
-és https://docs.docker.com/build/building/multi-stage/.
+## Hibák
 
-## Indulási hibák
-
-A Docker napló stabil hibakódot és javítási útmutatót ad, titkos értékek nélkül:
-
-- `rpc_password_missing`: első indításhoz RPC_PASSWORD vagy RPC_PASSWORD_FILE kell.
-- `rpc_password_invalid`: legalább 8 karakter szükséges, sortörés nélkül.
-- `conflicting_secret_sources`: ugyanahhoz a titokhoz az env és a _FILE nem adható meg egyszerre.
-- `secret_file_unreadable`: a _FILE útvonala a konténeren belüli, olvasható fájl legyen.
-- `invalid_json` / `invalid_json_object`: a megjelölt JSON-fájl hibás vagy nem objektum.
-- `vpn_enabled_invalid`: VPN_ENABLED értéke true vagy false legyen.
-- `vpn_disable_conflict`: már konfigurált VPN mellett tilos a védelem kikapcsolása.
-- `tls_pair_missing`: saját TLS esetén a tanúsítvány és a privát kulcs együtt szükséges.
-- `filesystem_permission`: ellenőrizd a config/downloads csatolást és a jogosultságokat.
-
-A hibás beállításokat a konténer konfigurációjában javítsd, majd hozd újra létre
-(pl. `docker compose up -d`). Egy egyszerű restart nem veszi át a módosított env-t.
-A hibajelzés nem indítja el védelem vagy hitelesítés nélkül a daemont.
+A napló titokmentes hibakódot és javítási útmutatót ad. Például:
+`rpc_password_invalid`, `conflicting_secret_sources`, `secret_file_unreadable`,
+`invalid_json`, `vpn_enabled_invalid`, `vpn_profile_missing`, `tls_pair_missing`.
+A hibásan konfigurált VPN nem indít védelem nélküli torrentforgalmat.
