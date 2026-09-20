@@ -4,8 +4,6 @@ services:
     platform: linux/amd64
     restart: unless-stopped
     stop_grace_period: 120s
-    mem_limit: 512m
-    mem_reservation: 192m
     pids_limit: 128
     ports:
       - "9091:9091"

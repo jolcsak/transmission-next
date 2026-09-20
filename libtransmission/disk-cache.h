@@ -25,9 +25,7 @@ public:
     using Clock = std::chrono::steady_clock;
     static constexpr size_t BlocksPerRegion = 32;
     static constexpr size_t RegionSize = BlocksPerRegion * tr_block_info::BlockSize;
-    // Sixteen MiB still coalesces 32-block regions at full line speed while
-    // leaving more cgroup headroom for the kernel's reclaimable file cache.
-    static constexpr size_t Capacity = 16U * 1024U * 1024U;
+    static constexpr size_t Capacity = 32U * 1024U * 1024U;
     explicit tr_disk_cache(tr_session& session, size_t capacity = Capacity)
         : session_{ session }
         , capacity_{ std::clamp(capacity / RegionSize, size_t{ 1 }, Capacity / RegionSize) * RegionSize }

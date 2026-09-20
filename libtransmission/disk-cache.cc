@@ -230,7 +230,7 @@ void tr_disk_cache::discard(tr_torrent_id_t id)
 
 void tr_disk_cache::pulse(Clock::time_point now)
 {
-    if (spare_ && now - spare_since_ >= 1s)
+    if (spare_ && now - spare_since_ >= 2s)
         spare_.reset();
     if (flushing_)
         return;

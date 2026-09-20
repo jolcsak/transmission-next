@@ -1,7 +1,7 @@
 {
-  "peer_connection_attempts_per_second": 3,
-  "peer_limit_global": 64,
-  "peer_limit_per_torrent": 24,
+  "peer_connection_attempts_per_second": 4,
+  "peer_limit_global": 80,
+  "peer_limit_per_torrent": 30,
   "lpd_enabled": false,
   "scrape_paused_torrents_enabled": false,
   "dht_enabled": true,
