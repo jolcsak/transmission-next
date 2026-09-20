@@ -260,10 +260,10 @@ TEST_F(DiskProfileTest, DetectsPartitionsStacksAndUnknownWithoutWritingToDevices
     write(root / "disk/queue/rotational", "0\n");
     EXPECT_EQ(tr_disk_profile::Kind::Ssd, tr_detect_disk_profile(path, sys).kind);
     write(root / "disk/device/model", "Virtual Disk\n");
-    EXPECT_EQ(tr_disk_profile::Kind::Unknown, tr_detect_disk_profile(path, sys).kind);
+    EXPECT_EQ(tr_disk_profile::Kind::Unknown, tr_detect_disk_profile(path, sys, "").kind);
     write(root / "disk/device/model", "physical test fixture\n");
     write(root / "disk/queue/rotational", "broken\n");
-    EXPECT_EQ(tr_disk_profile::Kind::Unknown, tr_detect_disk_profile(path, sys).kind);
+    EXPECT_EQ(tr_disk_profile::Kind::Unknown, tr_detect_disk_profile(path, sys, "").kind);
     write(root / "disk/queue/rotational", "0\n");
     write(root / "other/queue/rotational", "1\n");
     fs::create_directories(root / "stack/slaves");
@@ -277,7 +277,35 @@ TEST_F(DiskProfileTest, DetectsPartitionsStacksAndUnknownWithoutWritingToDevices
     EXPECT_EQ(2U, stacked.devices.size());
     fs::create_directory_symlink(root / "stack", root / "stack/slaves/cycle");
     EXPECT_EQ(tr_disk_profile::Kind::Unknown, tr_detect_disk_profile(path, sys).kind);
-    EXPECT_EQ(tr_disk_profile::Kind::Unknown, tr_detect_disk_profile(path, (root / "absent").string()).kind);
+    EXPECT_EQ(tr_disk_profile::Kind::Unknown, tr_detect_disk_profile(path, (root / "absent").string(), "").kind);
+
+    auto const override = tr_detect_disk_profile(path, (root / "absent").string(), "", "", "*=ssd");
+    EXPECT_EQ(tr_disk_profile::Kind::Ssd, override.kind);
+    EXPECT_EQ("configured:*", override.devices.front());
+
+    auto const nested_override = tr_detect_disk_profile(
+        path,
+        (root / "absent").string(),
+        "",
+        "",
+        "*=ssd;" + root.string() + "=hdd");
+    EXPECT_EQ(tr_disk_profile::Kind::Hdd, nested_override.kind);
+
+    auto const class_root = root / "class/block";
+    write(class_root / "dm-0/dm/name", "cachedev_0\n");
+    fs::create_directories(class_root / "dm-0/slaves");
+    fs::create_directory_symlink(root / "other", class_root / "dm-0/slaves/disk");
+    auto const mountinfo = root / "mountinfo";
+    write(
+        mountinfo,
+        "10 1 0:42 / " + root.string() + " rw - btrfs /dev/mapper/cachedev_0 rw\n");
+    auto const mounted = tr_detect_disk_profile(
+        path,
+        (root / "absent").string(),
+        mountinfo.string(),
+        class_root.string());
+    EXPECT_EQ(tr_disk_profile::Kind::Hdd, mounted.kind);
+    EXPECT_EQ(1U, mounted.devices.size());
 #else
     GTEST_SKIP() << "Linux sysfs detector";
 #endif

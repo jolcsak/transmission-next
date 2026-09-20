@@ -21,6 +21,8 @@ services:
       - /tmp:rw,nosuid,nodev,size=16m,mode=1777
     environment:
       VPN_ENABLED: "true"
+      # Optional fallback when the NAS hides its physical block topology.
+      STORAGE_PROFILE_DEFAULT: auto
       RPC_USERNAME: "transmission"
       RPC_PASSWORD_FILE: /run/secrets/rpc_password
       TRANSMISSION_VPN_OPENVPN_CONFIG: /config/provider.ovpn

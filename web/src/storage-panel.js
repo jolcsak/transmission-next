@@ -61,9 +61,15 @@ export class StoragePanel {
       const row = document.createElement('tr');
       const profile =
         {
-          hdd: 'HDD · automatikus',
+          hdd:
+            directory.profile_source === 'configured'
+              ? 'HDD · beállított'
+              : 'HDD · automatikus',
           manual: `Kézi · ${status.manual_batch_bytes / 1024} KiB írás`,
-          ssd: 'SSD · automatikus',
+          ssd:
+            directory.profile_source === 'configured'
+              ? 'SSD · beállított'
+              : 'SSD · automatikus',
           unknown: 'Ismeretlen · 64 KiB tartalék',
         }[directory.profile] ?? 'Ismeretlen';
       const [loadLabel, loadTone] = states[directory.load] ?? states.unknown;

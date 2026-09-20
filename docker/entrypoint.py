@@ -97,6 +97,40 @@ def initial_password(settings):
     print('RPC initial password generated/preserved in /config/rpc-initial-password.txt; username defaults to transmission. Change it in Settings after login.', flush=True)
 
 
+def disk_profile_rules():
+    """Validate persistent per-directory policy and expose a compact daemon rule set."""
+    path = CONFIG / 'storage-profiles.json'
+    config = read(path) if path.exists() else {}
+    default = os.environ.get('STORAGE_PROFILE_DEFAULT', config.get('default', 'auto'))
+    directories = config.get('directories', {})
+    if not isinstance(default, str) or default.lower() not in ('auto', 'hdd', 'ssd'):
+        raise StartupError('storage_profile_default_invalid',
+                           'STORAGE_PROFILE_DEFAULT / storage-profiles.json default must be auto, hdd or ssd.')
+    if not isinstance(directories, dict):
+        raise StartupError('storage_profile_directories_invalid',
+                           'storage-profiles.json directories must be an object of absolute container paths.')
+    rules = []
+    for directory, kind in directories.items():
+        if (not isinstance(directory, str) or not directory.startswith('/') or ';' in directory or '=' in directory or
+                not isinstance(kind, str) or kind.lower() not in ('auto', 'hdd', 'ssd')):
+            raise StartupError('storage_profile_rule_invalid',
+                               'Storage profile rules require absolute paths and auto, hdd or ssd values.')
+        if kind.lower() != 'auto':
+            rules.append(f'{directory}={kind.lower()}')
+    explicit = os.environ.get('STORAGE_PROFILE_RULES')
+    if explicit:
+        for item in explicit.split(';'):
+            directory, separator, kind = item.rpartition('=')
+            if (not separator or not directory.startswith('/') or ';' in directory or
+                    kind.lower() not in ('hdd', 'ssd')):
+                raise StartupError('storage_profile_rules_invalid',
+                                   'STORAGE_PROFILE_RULES must look like /downloads=hdd;/movies=ssd.')
+        rules = explicit.split(';')
+    if default.lower() != 'auto':
+        rules.append(f'*={default.lower()}')
+    return ';'.join(rules)
+
+
 def vpn_requested(config, environ=None):
     env = os.environ if environ is None else environ
     mode = (env.get('VPN_ENABLED') or 'auto').strip().lower()
@@ -159,6 +193,9 @@ def initialize():
                     rpc_port=19091, rpc_bind_address='127.0.0.1', rpc_whitelist_enabled=True,
                     rpc_whitelist='127.0.0.1', rpc_host_whitelist_enabled=False,
                     download_dir=os.environ.get('DOWNLOAD_DIR') or settings.get('download_dir') or '/downloads')
+    rules = disk_profile_rules()
+    if rules:
+        os.environ['TRANSMISSION_DISK_PROFILE_RULES'] = rules
     if not isinstance(settings['rpc_username'], str) or not settings['rpc_username']:
         raise StartupError('rpc_username_invalid', 'RPC_USERNAME / the stored RPC username must be a nonempty string.')
     write(CONFIG / 'settings.json', settings)

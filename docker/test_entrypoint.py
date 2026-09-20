@@ -103,6 +103,25 @@ class StartupDiagnosticsTests(unittest.TestCase):
         with patch.dict(os.environ, {'RPC_PASSWORD': '', 'RPC_PASSWORD_FILE': ''}, clear=True):
             self.assertIsNone(entry.secret('RPC_PASSWORD'))
 
+    def test_storage_profiles_from_json_and_environment(self):
+        (self.config/'storage-profiles.json').write_text(json.dumps({
+            'default': 'ssd',
+            'directories': {'/downloads': 'hdd', '/fast': 'auto'},
+        }))
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(entry.disk_profile_rules(), '/downloads=hdd;*=ssd')
+        with patch.dict(os.environ, {
+                'STORAGE_PROFILE_DEFAULT': 'auto',
+                'STORAGE_PROFILE_RULES': '/downloads=hdd;/movies=ssd'}, clear=True):
+            self.assertEqual(entry.disk_profile_rules(), '/downloads=hdd;/movies=ssd')
+
+    def test_invalid_storage_profiles_are_rejected(self):
+        (self.config/'storage-profiles.json').write_text('{"directories":{"relative":"hdd"}}')
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(entry.StartupError) as caught:
+                entry.disk_profile_rules()
+        self.assertEqual(caught.exception.code, 'storage_profile_rule_invalid')
+
     def test_bootstrap_symlink_rejected(self):
         target = self.root/'private'
         target.write_text('fixture-password')

@@ -2085,14 +2085,18 @@ void add_strings_from_var(std::set<std::string_view>& strings, tr_variant const&
         tr_disk_latency::Level level = tr_disk_latency::Level::Normal;
     };
     // Torrent paths remain alive for this synchronous session-thread snapshot.
-    std::map<std::pair<std::string_view, std::string_view>, Directory> directories;
+    std::map<std::tuple<std::string_view, std::string_view, std::string_view>, Directory> directories;
     bool disk_busy = false, disk_critical = false;
     for (auto const* tor : session->torrents())
     {
         auto const kind = tor->disk_profile().kind;
         auto const profile = !automatic ? "manual" : kind == tr_disk_profile::Kind::Hdd ? "hdd" :
             kind == tr_disk_profile::Kind::Ssd ? "ssd" : "unknown";
-        auto& row = directories[{ tor->current_dir().sv(), profile }];
+        auto const configured = std::ranges::any_of(tor->disk_profile().devices, [](auto const& device)
+        {
+            return device.starts_with("configured:");
+        });
+        auto& row = directories[{ tor->current_dir().sv(), profile, configured ? "configured" : "detected" }];
         ++row.torrents;
         row.active += tor->is_running();
         // Manual mode does not use automatic profile/latency decisions.
@@ -2108,9 +2112,10 @@ void add_strings_from_var(std::set<std::string_view>& strings, tr_variant const&
     rows.reserve(directories.size());
     for (auto const& [key, directory] : directories)
     {
-        auto row = tr_variant::Map{ 5U };
-        row.try_emplace(tr_quark_new("path"), key.first);
-        row.try_emplace(tr_quark_new("profile"), key.second);
+        auto row = tr_variant::Map{ 6U };
+        row.try_emplace(tr_quark_new("path"), std::get<0>(key));
+        row.try_emplace(tr_quark_new("profile"), std::get<1>(key));
+        row.try_emplace(tr_quark_new("profile_source"), std::get<2>(key));
         row.try_emplace(tr_quark_new("torrents"), directory.torrents);
         row.try_emplace(tr_quark_new("active"), directory.active);
         auto const load = !directory.measured ? "unknown" : directory.level == tr_disk_latency::Level::Critical ?

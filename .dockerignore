@@ -9,6 +9,7 @@
 !libtransmission/**
 !libtransmission-app/**
 !third-party/**
+!tests/**
 !licenses/**
 !web/**
 !extras/vpn/*.py

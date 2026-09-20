@@ -33,8 +33,16 @@ struct tr_disk_profile
             [&that](auto const& device) { return std::ranges::find(that.devices, device) != that.devices.end(); });
     }
 };
-// Alternate sysfs root is for tests; production reads the kernel device table.
-[[nodiscard]] tr_disk_profile tr_detect_disk_profile(std::string_view path, std::string_view sys_block_root = "/sys/dev/block");
+// Alternate kernel metadata paths and explicit rules are exposed for tests.
+// Production first applies TRANSMISSION_DISK_PROFILE_RULES, then resolves the
+// filesystem device through sysfs and finally through Linux mountinfo. Rules use
+// `/absolute/path=hdd;/other/path=ssd;*=hdd`; the longest matching path wins.
+[[nodiscard]] tr_disk_profile tr_detect_disk_profile(
+    std::string_view path,
+    std::string_view sys_block_root = "/sys/dev/block",
+    std::string_view mountinfo_path = "/proc/self/mountinfo",
+    std::string_view sys_class_root = "/sys/class/block",
+    std::string_view rules = {});
 
 // Buffered I/O latency signals pressure, never hardware identity. No probe I/O.
 class tr_disk_latency

@@ -5,6 +5,10 @@ services:
     restart: unless-stopped
     stop_grace_period: 120s
     pids_limit: 128
+    environment:
+      # Optional fallback when the NAS hides its physical block topology.
+      # Use STORAGE_PROFILE_RULES for mixed media, e.g. /downloads=hdd;/fast=ssd.
+      STORAGE_PROFILE_DEFAULT: auto
     ports:
       - "9091:9091"
       - "51413:51413"

@@ -40,10 +40,15 @@ learned limit. At 75% cache reservation, or an observed backlog older than a
 second, new download admissions are capped at 1 and per-peer requests at 8.
 Disk-latency restrictions below can impose tighter limits.
 
-Virtual disks, missing/unreadable sysfs attributes and unresolvable devices use
-the unknown fallback. In particular WSL's Virtual Disk does not identify the
-physical Windows drive. Network filesystems and unsupported OSes also fall back;
-this release does not query Windows host hardware from inside WSL.
+Docker bind mounts are resolved twice: first by filesystem device number, then
+through `/proc/self/mountinfo`. The latter maps common Synology Btrfs,
+device-mapper and mdraid mounts back to their physical sysfs slave disks. If a
+NAS hides that topology, set `STORAGE_PROFILE_DEFAULT=hdd|ssd`, or mixed rules
+such as `STORAGE_PROFILE_RULES=/downloads=hdd;/fast=ssd`. The same policy can be
+stored in `/config/storage-profiles.json` as
+`{"default":"auto","directories":{"/downloads":"hdd"}}`; environment values
+take precedence. Network filesystems, Docker Desktop 9p mounts, unsupported OSes
+and genuinely unresolvable devices remain unknown unless explicitly configured.
 
 The current torrent directory is rechecked on location changes and approximately
 once a minute through the existing queue timer. There is no sysfs probe for each
