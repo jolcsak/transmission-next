@@ -85,3 +85,21 @@ Kinyerés: `docker create --name tr-source jolcsak/transmission-next:amd64`,
 
 A Docker minták alapjai: https://docs.docker.com/engine/containers/run/
 és https://docs.docker.com/build/building/multi-stage/.
+
+## Indulási hibák
+
+A Docker napló stabil hibakódot és javítási útmutatót ad, titkos értékek nélkül:
+
+- `rpc_password_missing`: első indításhoz RPC_PASSWORD vagy RPC_PASSWORD_FILE kell.
+- `rpc_password_invalid`: legalább 8 karakter szükséges, sortörés nélkül.
+- `conflicting_secret_sources`: ugyanahhoz a titokhoz az env és a _FILE nem adható meg egyszerre.
+- `secret_file_unreadable`: a _FILE útvonala a konténeren belüli, olvasható fájl legyen.
+- `invalid_json` / `invalid_json_object`: a megjelölt JSON-fájl hibás vagy nem objektum.
+- `vpn_enabled_invalid`: VPN_ENABLED értéke true vagy false legyen.
+- `vpn_disable_conflict`: már konfigurált VPN mellett tilos a védelem kikapcsolása.
+- `tls_pair_missing`: saját TLS esetén a tanúsítvány és a privát kulcs együtt szükséges.
+- `filesystem_permission`: ellenőrizd a config/downloads csatolást és a jogosultságokat.
+
+A hibás beállításokat a konténer konfigurációjában javítsd, majd hozd újra létre
+(pl. `docker compose up -d`). Egy egyszerű restart nem veszi át a módosított env-t.
+A hibajelzés nem indítja el védelem vagy hitelesítés nélkül a daemont.

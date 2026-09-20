@@ -17,8 +17,32 @@ CHILDREN = []
 SECURITY = None
 
 
+class StartupError(ValueError):
+    """Only explicit, secret-free diagnostics may be printed to Docker logs."""
+    def __init__(self, code, message):
+        self.code = code
+        self.safe_message = message
+        super().__init__(message)
+
+
+def failure_message(error):
+    if isinstance(error, StartupError):
+        return f'Container configuration error [{error.code}]: {error.safe_message}'
+    if isinstance(error, PermissionError):
+        return ('Container configuration error [filesystem_permission]: Check /config and /downloads '
+                'mount permissions, secret-file access and the container root user.')
+    return ('Container startup/service failure [' + type(error).__name__ + ']: '
+            'Check the preceding service log and VPN status. Raw exception details are hidden to protect credentials.')
+
+
 def read(path, fallback=None):
-    return json.loads(path.read_text()) if path.exists() else dict(fallback or {})
+    try:
+        value = json.loads(path.read_text(encoding='utf-8-sig')) if path.exists() else dict(fallback or {})
+    except (json.JSONDecodeError, UnicodeError):
+        raise StartupError('invalid_json', f'{path.name} must contain valid UTF-8 JSON; its contents are not logged.') from None
+    if not isinstance(value, dict):
+        raise StartupError('invalid_json_object', f'{path.name} must contain a JSON object, not an array or scalar.')
+    return value
 
 
 def write(path, value, uid=1000, gid=1000):
@@ -39,8 +63,14 @@ def write(path, value, uid=1000, gid=1000):
 def secret(name):
     direct, filename = os.environ.get(name), os.environ.get(name + '_FILE')
     if direct is not None and filename:
-        raise ValueError('Use either a secret value or its _FILE setting')
-    return Path(filename).read_text().rstrip('\r\n') if filename else direct
+        raise StartupError('conflicting_secret_sources', f'Set either {name} or {name}_FILE, not both.')
+    if filename:
+        try:
+            return Path(filename).read_text(encoding='utf-8-sig').rstrip('\r\n')
+        except (OSError, UnicodeError, ValueError):
+            raise StartupError('secret_file_unreadable',
+                               f'{name}_FILE must point to a readable UTF-8 file mounted inside the container.') from None
+    return direct
 
 
 def unprivileged(args, namespace=False):
@@ -57,7 +87,7 @@ def spawn(args, env=None):
 
 def initialize():
     if os.geteuid() != 0:
-        raise ValueError('The supervisor requires root; the torrent daemon drops all privileges')
+        raise StartupError('supervisor_user', 'Remove the container user override: the supervisor requires root; the torrent daemon drops privileges to UID 1000.')
     os.umask(0o077)
     for directory in (CONFIG, Path('/downloads')):
         directory.mkdir(parents=True, exist_ok=True)
@@ -67,26 +97,28 @@ def initialize():
     password = secret('RPC_PASSWORD')
     if password is not None:
         if len(password) < 8 or any(c in password for c in '\r\n\x00'):
-            raise ValueError('RPC_PASSWORD must contain at least 8 characters and no line breaks')
+            raise StartupError('rpc_password_invalid', 'RPC_PASSWORD / RPC_PASSWORD_FILE must contain at least 8 characters and no line breaks.')
         settings['rpc_password'] = password
     elif not settings.get('rpc_password'):
-        raise ValueError('Set RPC_PASSWORD_FILE or RPC_PASSWORD on first start')
-    elif not str(settings['rpc_password']).startswith('{') and len(settings['rpc_password']) < 8:
-        raise ValueError('Stored RPC password must contain at least 8 characters')
+        raise StartupError('rpc_password_missing', 'No RPC password is configured. Set RPC_PASSWORD_FILE or RPC_PASSWORD (minimum 8 characters) on first start.')
+    elif not isinstance(settings['rpc_password'], str):
+        raise StartupError('rpc_password_type', 'The rpc_password / rpc-password field in settings.json must be a string.')
+    elif not settings['rpc_password'].startswith('{') and len(settings['rpc_password']) < 8:
+        raise StartupError('rpc_password_invalid', 'The stored RPC password in settings.json must contain at least 8 characters.')
     settings.update(rpc_authentication_required=True, rpc_enabled=True,
                     rpc_username=os.environ.get('RPC_USERNAME', settings.get('rpc_username', 'transmission')),
                     rpc_port=19091, rpc_bind_address='127.0.0.1', rpc_whitelist_enabled=True,
                     rpc_whitelist='127.0.0.1', rpc_host_whitelist_enabled=False,
                     download_dir=os.environ.get('DOWNLOAD_DIR', settings.get('download_dir', '/downloads')))
-    if not settings['rpc_username']:
-        raise ValueError('RPC username cannot be empty')
+    if not isinstance(settings['rpc_username'], str) or not settings['rpc_username']:
+        raise StartupError('rpc_username_invalid', 'RPC_USERNAME / the stored RPC username must be a nonempty string.')
     write(CONFIG / 'settings.json', settings)
     vpn_enabled = os.environ.get('VPN_ENABLED', 'true').lower()
     if vpn_enabled not in ('true', 'false'):
-        raise ValueError('VPN_ENABLED must be true or false')
+        raise StartupError('vpn_enabled_invalid', 'VPN_ENABLED must be true or false.')
     enabled = vpn_enabled == 'true'
     if not enabled and ((CONFIG / 'vpn.json').exists() or any(k.startswith('TRANSMISSION_VPN_') for k in os.environ)):
-        raise ValueError('Refusing VPN_ENABLED=false while VPN configuration exists')
+        raise StartupError('vpn_disable_conflict', 'VPN_ENABLED=false conflicts with vpn.json or TRANSMISSION_VPN_* variables. Configured VPN protection cannot be silently disabled.')
     if enabled:
         sys.path.insert(0, str(ROOT / 'extras/vpn'))
         config = dict(provider='purevpn', openvpn_config='', credentials_file='',
@@ -115,7 +147,7 @@ def initialize():
                         '-keyout', str(tls / 'server.key'), '-out', str(tls / 'server.crt')],
                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if not (tls / 'server.crt').is_file() or not (tls / 'server.key').is_file():
-        raise ValueError('Both TLS certificate and key are required')
+        raise StartupError('tls_pair_missing', 'Both /config/tls/server.crt and /config/tls/server.key are required when supplying a custom TLS certificate.')
     os.chmod(tls / 'server.key', 0o600)
     # These control sockets need searchable parent directories despite the private umask.
     for directory in ('/run/transmission-vpn-test-control', '/run/transmission-rpc-security'):
@@ -170,7 +202,7 @@ if __name__ == '__main__':
         code = main()
     except Exception as error:
         # Configuration and credential contents must not enter Docker logs.
-        print('Container startup/service failure: ' + type(error).__name__ + '. Check configuration and VPN status.', file=sys.stderr)
+        print(failure_message(error), file=sys.stderr)
     finally:
         for child in reversed(CHILDREN):
             if child.poll() is None:
