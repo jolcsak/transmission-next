@@ -44,6 +44,10 @@ eldobott capabilitykkel fut. SYS_ADMIN széles jogosultság, megbízható image-
 PureVPN-profil: például `config/provider.ovpn`. A külső CA-fájlok legyenek mellette,
 vagy használj inline CA-t. Profil/hitelesítés megadható a felületen, vpn.json-ban,
 vagy a TRANSMISSION_VPN_* env változókkal. A _USERNAME_FILE és _PASSWORD_FILE is támogatott.
+A DSM volume ACL-je miatt a hitelesítő fájl módja a konténerben eltérhet a `0600`-tól.
+Az entrypoint által indított VPN-vezérlő ezért ellenőrzés után root-only `/run` tmpfs-fájlba
+másolja, és az OpenVPN kizárólag ezt a belső példányt kapja meg. Natív telepítésnél a
+hitelesítő forrásfájlra továbbra is kötelező a `0600` jogosultság.
 A webes kapcsolatteszt VPN nélküli induláskor is elérhető, ha a konténer már megkapta
 az ehhez szükséges eszközt és capabilityket. Egyébként ezeket előbb hozzá kell adni.
 A Docker image-ben nincs külön `transmission-vpn-test` konténer vagy systemd szolgáltatás:

@@ -170,6 +170,28 @@ class ConfigTest(unittest.TestCase):
         with self.assertRaises(OSError):
             controller.credentials(link)
 
+    def test_container_stages_acl_backed_credentials_privately(self):
+        secret = self.root / 'secret'
+        secret.write_text('user\nfixture-password\n')
+        secret.chmod(0o666)
+        config = {'credentials_file': str(secret)}
+        user = pwd.getpwuid(os.getuid())
+        runtime = self.root / 'run'
+        with mock.patch.object(controller, 'RUNTIME', runtime):
+            staged = controller.prepare_credentials(config, user, container_mode=True)
+            self.assertEqual(staged, runtime / 'credentials.input')
+            self.assertEqual(config['credentials_file'], str(staged))
+            self.assertEqual(controller.credentials(staged), 'user\nfixture-password\n')
+            self.assertEqual(staged.stat().st_mode & 0o777, 0o600)
+
+    def test_native_mode_keeps_rejecting_permissive_credentials(self):
+        secret = self.root / 'secret'
+        secret.write_text('user\nfixture-password\n')
+        secret.chmod(0o644)
+        config = {'credentials_file': str(secret)}
+        with self.assertRaises(ValueError):
+            controller.prepare_credentials(config, pwd.getpwuid(os.getuid()), container_mode=False)
+
     def test_firewall_has_no_general_established_bypass(self):
         config, _ = self.load()
         profile = dataclasses.make_dataclass('Profile', [('protocol', str), ('port', int)])('udp', 1194)

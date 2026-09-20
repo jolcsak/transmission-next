@@ -78,16 +78,45 @@ def secure_write(path, text, uid=0, gid=0):
         temporary.unlink(missing_ok=True)
 
 
-def credentials(path):
+def ensure_private_runtime():
+    RUNTIME.mkdir(mode=0o700, exist_ok=True)
+    info = RUNTIME.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077:
+        raise RuntimeError('/run/transmission-vpn must be a root-owned private directory')
+
+
+def credentials(path, *, mounted_volume=False):
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     with os.fdopen(fd) as stream:
         info = os.fstat(stream.fileno())
-        if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077 or info.st_size > 4096:
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 4096:
+            raise ValueError('VPN credentials must be a regular private file (chmod 600), at most 4096 bytes')
+        if info.st_mode & 0o077 and not mounted_volume:
             raise ValueError('VPN credentials must be a regular private file (chmod 600), at most 4096 bytes')
         lines = stream.read().splitlines()
     if len(lines) != 2 or any(not line or '\x00' in line for line in lines):
         raise ValueError('VPN credentials require exactly two nonempty lines: VPN username, VPN password')
     return '\n'.join(lines) + '\n'
+
+
+def prepare_credentials(config, user, *, container_mode=False):
+    """Validate credentials and stage container-mounted secrets in root-private tmpfs."""
+    if config.get('username'):
+        secret = config['username'] + '\n' + config['password'] + '\n'
+    else:
+        # DSM bind mounts can expose ACL-backed files as 0644/0666 in the
+        # container. Only the root-owned container entrypoint may opt into
+        # reading such a source; it is never passed directly to OpenVPN.
+        secret = credentials(config['credentials_file'], mounted_volume=container_mode)
+    if not container_mode:
+        if config.get('username'):
+            secure_write(config['credentials_file'], secret, user.pw_uid, user.pw_gid)
+        return None
+    ensure_private_runtime()
+    staged = RUNTIME / 'credentials.input'
+    secure_write(staged, secret)
+    config['credentials_file'] = str(staged)
+    return staged
 
 
 def load_config(path, *, environ=None):
@@ -356,10 +385,7 @@ class Supervisor:
         daemon = Path(self.config['daemon'])
         if not self.probe and (not daemon.is_file() or not os.access(daemon, os.X_OK)):
             raise RuntimeError('Transmission daemon is not executable')
-        RUNTIME.mkdir(mode=0o700, exist_ok=True)
-        info = RUNTIME.lstat()
-        if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077:
-            raise RuntimeError('/run/transmission-vpn must be a root-owned private directory')
+        ensure_private_runtime()
         self.lock = os.open(RUNTIME / 'lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
         try:
             fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -606,7 +632,7 @@ class Supervisor:
         if self.owned_resolver:
             (RESOLVER / 'resolv.conf').unlink(missing_ok=True)
             RESOLVER.rmdir()
-        for name in ('auth.txt', 'client.ovpn', 'management.sock'):
+        for name in ('auth.txt', 'credentials.input', 'client.ovpn', 'management.sock'):
             (RUNTIME / name).unlink(missing_ok=True)
         if self.last_state is not None:
             self.event('failed' if self.failed else 'stopped', self.failure_message,
@@ -622,6 +648,7 @@ def main():
     parser.add_argument('--config', type=Path)
     args = parser.parse_args()
     supervisor = None
+    staged_credentials = None
     try:
         if args.action == 'providers':
             for name, provider in PROVIDERS.items():
@@ -635,9 +662,10 @@ def main():
         config, user = load_config(args.config, environ=os.environ)
         if config.get('openvpn_profile'):
             secure_write(config['openvpn_config'], config['openvpn_profile'], user.pw_uid, user.pw_gid)
-        if config.get('username'):
-            secure_write(config['credentials_file'], config['username'] + '\n' + config['password'] + '\n', user.pw_uid, user.pw_gid)
         profile = PROVIDERS[config['provider']].load(config['openvpn_config'])
+        container_marker = Path('/run/container-vpn-enabled')
+        container_mode = container_marker.is_file() and container_marker.read_text().strip() == 'true'
+        staged_credentials = prepare_credentials(config, user, container_mode=container_mode)
         credentials(config['credentials_file'])
         if args.action == 'check':
             print(f"Valid {config['provider']} profile, {profile.protocol.upper()} transport; no connection attempted.")
@@ -652,6 +680,9 @@ def main():
     except (OSError, ValueError, KeyError, RuntimeError) as exc:
         print(f'VPN error: {exc}', file=sys.stderr)
         return 1
+    finally:
+        if staged_credentials is not None:
+            staged_credentials.unlink(missing_ok=True)
 
 
 if __name__ == '__main__':
