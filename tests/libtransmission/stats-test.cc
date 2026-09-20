@@ -9,6 +9,21 @@
 
 using StatsTest = tr::test::SandboxedTest;
 
+TEST_F(StatsTest, MissingStatsFileStartsWithEmptyHistory)
+{
+    auto const now = time(nullptr);
+    auto const path = sandboxDir() + "/stats.json";
+    ASSERT_FALSE(std::filesystem::exists(path));
+
+    auto stats = tr_stats{ sandboxDir(), now };
+    auto const history = stats.history(now);
+    auto const& map = *history.get_if<tr_variant::Map>();
+
+    EXPECT_EQ(now, map.value_if<int64_t>(tr_quark_new("started_at")));
+    EXPECT_TRUE(map.find_if<tr_variant::Vector>(tr_quark_new("days"))->empty());
+    EXPECT_TRUE(map.find_if<tr_variant::Vector>(tr_quark_new("hours"))->empty());
+}
+
 TEST_F(StatsTest, CheckpointsEveryThirtyMinutesAndSavesOnShutdown)
 {
     auto const checkpoint = tr_stats::Clock::now();

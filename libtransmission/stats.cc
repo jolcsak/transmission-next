@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "libtransmission/api-compat.h"
+#include "libtransmission/error.h"
 #include "libtransmission/file.h"
 #include "libtransmission/quark.h"
 #include "libtransmission/serializer.h"
@@ -161,7 +162,16 @@ tr_variant tr_stats::history(time_t now) const
 void tr_stats::load_history(time_t now)
 {
     history_started_ = now;
-    auto value = tr_variant_serde::json().parse_file(tr_pathbuf{ config_dir_, "/stats.json"sv });
+    auto const filename = tr_pathbuf{ config_dir_, "/stats.json"sv };
+    auto error = tr_error{};
+    if (!tr_sys_path_get_info(filename, 0, &error) && tr_error_is_enoent(error.code()))
+    {
+        // A new profile has no persisted statistics yet. Other filesystem
+        // errors are left to parse_file(), which reports them normally.
+        return;
+    }
+
+    auto value = tr_variant_serde::json().parse_file(filename);
     auto const* root = value ? value->get_if<tr_variant::Map>() : nullptr;
     auto const* history = root ? root->find_if<tr_variant::Map>(tr_quark_new("transfer_history")) : nullptr;
     if (history == nullptr)
