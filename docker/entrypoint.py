@@ -227,7 +227,7 @@ def main():
     def security_event(source, message, level):
         security_entries.append(dict(time_ms=int(time.time() * 1000), source=source, message=message, level=level))
     deadline = time.monotonic() + 610
-    print('Container starting: HTTPS :9091; managed VPN=' + str(enabled), flush=True)
+    print('Container starting: HTTPS :9091; DSM HTTP backend :9092; managed VPN=' + str(enabled), flush=True)
     while not STOP.is_set():
         if SECURITY is not None:
             before = security_entries[-1] if security_entries else None

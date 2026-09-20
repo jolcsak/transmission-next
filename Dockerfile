@@ -67,7 +67,7 @@ COPY extras/auto/settings.json /opt/transmission/extras/auto/settings.json
 RUN mv /opt/transmission/rpc-relay /opt/transmission/extras/vpn/rpc-relay
 COPY docker/entrypoint.py docker/healthcheck.py /opt/transmission/docker/
 COPY docker/nginx.conf /etc/transmission-rpc-tls/nginx.conf
-EXPOSE 9091/tcp
+EXPOSE 9091/tcp 9092/tcp
 VOLUME ["/config", "/downloads"]
 STOPSIGNAL SIGTERM
 HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 \

@@ -3,6 +3,9 @@
 Image: `jolcsak/transmission-next:amd64`. Web/RPC: `https://localhost:9091/transmission/web/`.
 A `https://localhost:9091/` gyökércím automatikusan erre az útvonalra irányít át,
 így DSM reverse proxy vagy Web Station site mögül a domain gyökere is használható.
+DSM HTTPS site esetén a backend protokoll legyen HTTP, a konténerport pedig `9092`.
+A `9092` portot csak localhostra vagy a megbízható reverse-proxy hálózatra publikáld;
+a kliensek közvetlen HTTPS elérésére továbbra is a `9091` való.
 
 ## Indulás kézi beállítások nélkül
 
@@ -54,7 +57,9 @@ MQTT/Influx esetén alagúton elérhető célpont szükséges; nincs automatikus
 - `/config`: settings.json, vpn.json, telemetry.json, torrentállapotok és TLS.
 - `/downloads`: letöltések; további lemezek külön volume-ként csatolhatók.
 - A config/downloads gyökér tulajdonosa induláskor UID/GID 1000 lesz; rekurzív chown nincs.
-- 9091: HTTPS admin/RPC. 19091: belső backend, ne publikáld.
+- 9091: közvetlen HTTPS admin/RPC. 9092: HTTP backend DSM TLS-lezáráshoz, csak
+  localhostra vagy megbízható proxyhálózatra publikáld. 19091: belső daemon backend,
+  ne publikáld.
 - A közvetlen mód peer-portja alapból 51413 TCP/UDP; a minimális Compose publikálja.
 - VPN esetén ne publikálj közvetlen peer-portot; a szolgáltató oldali elérhetőség számít.
 - Saját TLS: `/config/tls/server.crt` és `/config/tls/server.key` együtt.
