@@ -1,6 +1,8 @@
 # Transmission Next — linux/amd64
 
 Image: `jolcsak/transmission-next:amd64`. Web/RPC: `https://localhost:9091/transmission/web/`.
+A `https://localhost:9091/` gyökércím automatikusan erre az útvonalra irányít át,
+így DSM reverse proxy vagy Web Station site mögül a domain gyökere is használható.
 
 ## Indulás kézi beállítások nélkül
 
