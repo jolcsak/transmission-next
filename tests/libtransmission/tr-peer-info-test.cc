@@ -6,6 +6,9 @@
 #include <array>
 #include <ctime>
 #include <optional>
+#include <random>
+#include <sstream>
+#include <vector>
 #include <string_view>
 #include <tuple>
 #include <utility>
@@ -14,12 +17,58 @@
 
 #include <libtransmission/net.h>
 #include <libtransmission/peer-mgr.h>
+#include <libtransmission/top-candidates.h>
+#include <libtransmission/vpn-traffic.h>
 
 #include "test-fixtures.h"
 
 using namespace std::literals;
 
 using PeerInfoTest = ::tr::test::TransmissionTest;
+
+TEST_F(PeerInfoTest, vpnTrafficCounters)
+{
+    auto input = std::istringstream{
+        "header\n tun01: 999 1 0 0 0 0 0 0 999 1\n"
+        " tun0: 12345678901 45 0 0 0 0 0 0 23456789012 67 0 0 0 0 0 0\n" };
+    auto const value = tr_read_vpn_traffic(input);
+    ASSERT_TRUE(value);
+    EXPECT_EQ(12345678901LL, value->received_bytes);
+    EXPECT_EQ(23456789012LL, value->sent_bytes);
+    EXPECT_EQ(45, value->received_packets);
+    EXPECT_EQ(67, value->sent_packets);
+    for (auto const* line : { "", "tun01: 12 3", "tun0: 12 3", "tun0: -1 2 0 0 0 0 0 0 3 4" })
+    {
+        auto invalid = std::istringstream{ line };
+        EXPECT_FALSE(tr_read_vpn_traffic(invalid));
+    }
+    auto reset = std::istringstream{ "tun0: 0 0 0 0 0 0 0 0 0 0" };
+    ASSERT_TRUE(tr_read_vpn_traffic(reset));
+}
+
+TEST_F(PeerInfoTest, boundedCandidatesMatchPartialSort)
+{
+    auto random = std::mt19937{ 42 };
+    for (size_t const count : { 0U, 1U, 35U, 36U, 37U, 1000U, 100000U })
+    {
+        for (int pattern = 0; pattern < 4; ++pattern)
+        {
+            auto values = std::vector<uint64_t>{};
+            auto selector = tr_top_candidates<uint64_t, 36, std::less<uint64_t>>{ {} };
+            for (size_t i = 0; i < count; ++i)
+            {
+                auto const value = pattern == 0 ? i : pattern == 1 ? count - i : pattern == 2 ? random() : random() % 8;
+                values.push_back(value);
+                selector.push(value);
+            }
+            auto const keep = std::min(size_t{ 36 }, values.size());
+            std::partial_sort(values.begin(), values.begin() + keep, values.end());
+            values.resize(keep);
+            auto const result = selector.finish();
+            EXPECT_EQ(values, (std::vector<uint64_t>{ result.begin(), result.end() }));
+        }
+    }
+}
 
 TEST_F(PeerInfoTest, mergeConnectable)
 {

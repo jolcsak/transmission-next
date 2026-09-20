@@ -119,6 +119,35 @@ public:
     }
 };
 
+// A non-owning reader; the source must outlive this view and remain unchanged.
+template<typename value_type>
+class BufferView final : public BufferReader<value_type>
+{
+public:
+    explicit BufferView(std::span<value_type const> bytes)
+        : bytes_{ bytes }
+    {
+    }
+
+    void drain(size_t n_bytes) override
+    {
+        bytes_ = bytes_.subspan(std::min(n_bytes, bytes_.size()));
+    }
+
+    [[nodiscard]] size_t size() const noexcept override
+    {
+        return bytes_.size();
+    }
+
+    [[nodiscard]] value_type const* data() const noexcept override
+    {
+        return bytes_.data();
+    }
+
+private:
+    std::span<value_type const> bytes_;
+};
+
 template<typename value_type>
 class BufferWriter
 {
@@ -249,15 +278,17 @@ public:
     {
         if (auto const free_at_end = buf_.size() - end_pos_; free_at_end < n_bytes)
         {
-            if (auto const total_free = begin_pos_ + free_at_end; total_free >= n_bytes)
+            if (auto const total_free = begin_pos_ + free_at_end;
+                total_free >= n_bytes || (begin_pos_ != 0U && n_bytes > buf_.capacity() - end_pos_))
             {
-                // move data so that all free space is at the end
+                // Reclaim consumed bytes before an allocation so they don't
+                // inflate the requested capacity or get copied into it.
                 auto const size = this->size();
                 std::copy(data(), data() + size, std::data(buf_));
                 begin_pos_ = 0;
                 end_pos_ = size;
             }
-            else // even `total_free` is not enough, so resize
+            if (buf_.size() - end_pos_ < n_bytes)
             {
                 buf_.resize(end_pos_ + n_bytes);
             }

@@ -217,10 +217,19 @@ export class TorrentRendererFull {
   render(controller, torrent, root) {
     const is_stopped = torrent.isStopped();
     root.classList.toggle('paused', is_stopped);
-    const { labels, name, peer_details, progressbar, progress_details } = root;
+    const { labels, name, peer_details, progressbar, progress_details, vpn } =
+      root;
 
     // name
     setTextContent(name, torrent.getName());
+    TorrentRendererHelper.updateIcon(root.icon, torrent);
+    const protectedByVpn =
+      controller.vpnStatus?.state === 'connected' &&
+      controller.vpnStatus?.kill_switch === 'namespace-firewall';
+    vpn.hidden = !protectedByVpn;
+    vpn.title = protectedByVpn
+      ? 'A felügyelt VPN-kapcsolaton keresztül kezelt torrent'
+      : '';
 
     // labels
     TorrentRendererHelper.formatLabels(torrent, labels);
@@ -247,6 +256,7 @@ export class TorrentRendererFull {
     const elements = [
       ['icon', 'icon'],
       ['name', 'torrent-name'],
+      ['vpn', 'torrent-vpn-badge'],
       ['labels', 'torrent-labels'],
       ['progress_details', 'torrent-progress-details'],
       ['progressbar', 'torrent-progress-bar'],
@@ -317,10 +327,18 @@ export class TorrentRendererCompact {
   // eslint-disable-next-line class-methods-use-this
   render(controller, torrent, root) {
     root.classList.toggle('paused', torrent.isStopped());
-    const { labels, name, peer_details, progressbar } = root;
+    const { labels, name, peer_details, progressbar, vpn } = root;
 
     // name
     setTextContent(name, torrent.getName());
+    TorrentRendererHelper.updateIcon(root.icon, torrent);
+    const protectedByVpn =
+      controller.vpnStatus?.state === 'connected' &&
+      controller.vpnStatus?.kill_switch === 'namespace-firewall';
+    vpn.hidden = !protectedByVpn;
+    vpn.title = protectedByVpn
+      ? 'A felügyelt VPN-kapcsolaton keresztül kezelt torrent'
+      : '';
 
     // labels
     TorrentRendererHelper.formatLabels(torrent, labels);
@@ -341,6 +359,7 @@ export class TorrentRendererCompact {
     const elements = [
       ['icon', 'icon'],
       ['name', 'torrent-name compact'],
+      ['vpn', 'torrent-vpn-badge'],
       ['labels', 'torrent-labels compact'],
       ['peer_details', 'torrent-peer-details compact'],
       ['progressbar', 'torrent-progress-bar compact'],

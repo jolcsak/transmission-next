@@ -46,6 +46,10 @@ void tr_logClearQueue();
 
 [[nodiscard]] tr_log_messages tr_logGetQueue();
 
+// Read-only bounded diagnostic history, independent of the normal log consumer.
+void tr_logSetHistoryEnabled(bool enabled);
+[[nodiscard]] tr_log_messages tr_logGetHistory();
+
 // ---
 
 void tr_logSetLevel(tr_log_level level);

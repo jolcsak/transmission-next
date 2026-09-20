@@ -56,6 +56,8 @@ public:
     bool queue_enabled_ = false;
 
     tr_log_messages queue_;
+    bool history_enabled_ = false;
+    tr_log_messages history_;
 
     std::recursive_mutex message_mutex_;
 };
@@ -77,6 +79,35 @@ void logAddImpl(
     }
 
     auto const lock = log_state.unique_lock();
+
+    if (log_state.history_enabled_)
+    {
+        auto const bounded = [](std::string_view value, size_t limit)
+        {
+            if (value.size() > limit)
+            {
+                while (limit > 0 && (static_cast<unsigned char>(value[limit]) & 0xc0) == 0x80)
+                {
+                    --limit;
+                }
+                auto result = std::string{};
+                result.reserve(limit + 3);
+                result.append(value.substr(0, limit));
+                result.append("…");
+                return result;
+            }
+            return std::string{ value };
+        };
+        auto& entry = log_state.history_.emplace_back();
+        entry.level = level;
+        entry.when = std::chrono::system_clock::now();
+        entry.message = bounded(msg, 1024);
+        entry.name = bounded(name, 128);
+        if (log_state.history_.size() > 512)
+        {
+            log_state.history_.pop_front();
+        }
+    }
 
 #if defined(__ANDROID__)
 
@@ -171,6 +202,22 @@ tr_log_messages tr_logGetQueue()
     auto const lock = log_state.unique_lock();
 
     return std::exchange(log_state.queue_, {});
+}
+
+void tr_logSetHistoryEnabled(bool enabled)
+{
+    auto const lock = log_state.unique_lock();
+    log_state.history_enabled_ = enabled;
+    if (!enabled)
+    {
+        log_state.history_.clear();
+    }
+}
+
+tr_log_messages tr_logGetHistory()
+{
+    auto const lock = log_state.unique_lock();
+    return log_state.history_;
 }
 
 void tr_logClearQueue()

@@ -130,6 +130,19 @@ public:
 
     void read_bytes(void* bytes, size_t n_bytes);
 
+    // Consume a complete plaintext span without copying. The view is invalidated
+    // by a subsequent input-buffer write. Encrypted or incomplete input is untouched.
+    [[nodiscard]] std::optional<std::span<std::byte const>> read_plaintext_view(size_t n_bytes)
+    {
+        if (filter_.is_active() || n_bytes > read_buffer_size())
+        {
+            return {};
+        }
+        auto const view = std::span{ inbuf_.data(), n_bytes };
+        read_buffer_discard(n_bytes);
+        return view;
+    }
+
     void read_uint8(uint8_t* setme)
     {
         read_bytes(setme, sizeof(uint8_t));
@@ -385,6 +398,7 @@ private:
     bool const is_incoming_;
 
     bool dht_supported_ = false;
+    bool read_failed_ = false;
     bool extended_protocol_supported_ = false;
     bool fast_extension_supported_ = false;
 };

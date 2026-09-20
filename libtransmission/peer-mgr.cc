@@ -50,6 +50,7 @@
 #include "libtransmission/timer.h"
 #include "libtransmission/torrent-magnet.h"
 #include "libtransmission/torrent.h"
+#include "libtransmission/top-candidates.h"
 #include "libtransmission/torrents.h"
 #include "libtransmission/tr-assert.h"
 #include "libtransmission/types.h"
@@ -535,6 +536,8 @@ public:
     {
         auto const lock = unique_lock();
 
+        // Publish cached blocks before removing the peer and its wishlist requests.
+        tor->session->disk_cache().flush(tor->id());
         peer_disconnect(tor, peer->has(), peer->active_requests);
 
         auto const& peer_info = peer->peer_info;
@@ -652,20 +655,24 @@ public:
             break;
 
         case tr_peer_event::Type::ClientGotHave:
+            s->interest_dirty = true;
             s->got_have(s->tor, event.pieceIndex);
             s->mark_all_upload_only_flag_dirty();
             break;
 
         case tr_peer_event::Type::ClientGotHaveAll:
+            s->interest_dirty = true;
             s->got_have_all(s->tor);
             s->mark_all_upload_only_flag_dirty();
             break;
 
         case tr_peer_event::Type::ClientGotHaveNone:
+            s->interest_dirty = true;
             s->mark_all_upload_only_flag_dirty();
             break;
 
         case tr_peer_event::Type::ClientGotBitfield:
+            s->interest_dirty = true;
             s->got_bitfield(s->tor, msgs->has());
             s->mark_all_upload_only_flag_dirty();
             break;
@@ -750,6 +757,8 @@ public:
     std::vector<std::unique_ptr<tr_webseed>> webseeds;
 
     Peers peers;
+    bool interest_dirty = true;
+    uint64_t interest_revision = 0;
 
     // depends-on: tor
     std::unique_ptr<WishlistController> wishlist_controller;
@@ -836,6 +845,7 @@ private:
 
     void on_torrent_done()
     {
+        interest_dirty = true;
         std::ranges::for_each(peers, [](auto const& peer) { peer->set_interested(false); });
         wishlist_controller.reset();
     }
@@ -907,6 +917,7 @@ private:
 
     void on_got_metainfo()
     {
+        interest_dirty = true;
         // the webseed list may have changed...
         rebuild_webseeds();
 
@@ -1184,6 +1195,7 @@ private:
     }
 
     OutboundCandidates outbound_candidates_;
+    size_t connection_attempt_half_credit_ = 0U;
 
     std::unique_ptr<tr::Timer> const bandwidth_timer_;
     std::unique_ptr<tr::Timer> const peer_info_timer_;
@@ -1449,6 +1461,7 @@ void create_bit_torrent_peer(
     auto const
         msgs = tr_peerMsgs::create(tor, std::move(peer_info), std::move(io), peer_id, &tr_swarm::peer_callback_bt, swarm);
     swarm->peers.emplace_back(msgs);
+    swarm->interest_dirty = true;
 
     ++swarm->stats.peer_count;
     ++swarm->stats.peer_from_count[msgs->peer_info->from_first()];
@@ -1783,6 +1796,11 @@ std::vector<tr_pex> tr_peerMgrGetPeers(tr_torrent const* tor, uint8_t address_ty
     TR_ASSERT(address_type == TR_AF_INET || address_type == TR_AF_INET6);
     TR_ASSERT(list_mode == TR_PEERS_CONNECTED || list_mode == TR_PEERS_INTERESTING);
 
+    if (max_peer_count == 0)
+    {
+        return {};
+    }
+
     tr_swarm const* s = tor->swarm;
 
     // build a list of peer info objects
@@ -1820,10 +1838,20 @@ std::vector<tr_pex> tr_peerMgrGetPeers(tr_torrent const* tor, uint8_t address_ty
     auto pex = std::vector<tr_pex>{};
     pex.reserve(n);
 
-    std::ranges::partial_sort(
-        infos,
-        infos.begin() + static_cast<decltype(infos)::difference_type>(n),
-        CompareAtomsByUsefulness);
+    // The selected peers are sorted by address below; ranking their prefix is wasted work.
+    if (n < infos.size())
+    {
+        auto const end = infos.begin() + static_cast<decltype(infos)::difference_type>(n);
+        if (n < infos.size() / 16)
+        {
+            // Tiny samples from a large pool are cheaper with a small heap.
+            std::ranges::partial_sort(infos, end, CompareAtomsByUsefulness);
+        }
+        else
+        {
+            std::ranges::nth_element(infos, end, CompareAtomsByUsefulness);
+        }
+    }
     infos.resize(n);
 
     for (auto const* const info : infos)
@@ -1842,6 +1870,7 @@ std::vector<tr_pex> tr_peerMgrGetPeers(tr_torrent const* tor, uint8_t address_ty
 
 void tr_swarm::on_torrent_started()
 {
+    interest_dirty = true;
     auto const lock = unique_lock();
     is_running = true;
     manager->rechokeSoon();
@@ -2135,25 +2164,47 @@ void updateInterest(tr_swarm* swarm)
     auto const* const tor = swarm->tor;
     if (tor->is_done() || !tor->client_can_download())
     {
+        swarm->interest_dirty = true;
         return;
     }
+
+    auto const revision = tor->interest_revision();
+    if (!swarm->interest_dirty && swarm->interest_revision == revision)
+    {
+        return;
+    }
+    // Consume only the state observed here; callbacks may invalidate it again.
+    swarm->interest_dirty = false;
 
     if (auto const& peers = swarm->peers; !std::empty(peers))
     {
         auto const n = tor->piece_count();
 
-        // build a bitfield of interesting pieces...
-        auto piece_is_interesting = std::vector<bool>(n);
-        for (tr_piece_index_t i = 0U; i < n; ++i)
-        {
-            piece_is_interesting[i] = tor->piece_is_wanted(i) && !tor->has_piece(i);
-        }
-
+        // Seeds are always interesting here. Build the piece mask only if a
+        // partial peer actually needs it, and share it across all partial peers.
+        auto piece_is_interesting = std::vector<bool>{};
+        auto mask_ready = false;
         for (auto const& peer : peers)
         {
+            if (peer->is_seed())
+            {
+                peer->set_interested(true);
+                continue;
+            }
+
+            if (!mask_ready)
+            {
+                piece_is_interesting.resize(n);
+                for (tr_piece_index_t i = 0U; i < n; ++i)
+                {
+                    piece_is_interesting[i] = tor->piece_is_wanted(i) && !tor->has_piece(i);
+                }
+                mask_ready = true;
+            }
             peer->set_interested(isPeerInteresting(tor, piece_is_interesting, peer.get()));
         }
     }
+    swarm->interest_revision = revision;
 }
 } // namespace update_interest_helpers
 } // namespace
@@ -2532,7 +2583,7 @@ void enforceSessionPeerLimit(size_t global_peer_limit, tr_torrents& torrents)
     if (std::size(peers) > global_peer_limit)
     {
         using diff_type = decltype(peers)::difference_type;
-        std::ranges::partial_sort(
+        std::ranges::nth_element(
             peers,
             std::begin(peers) + static_cast<diff_type>(global_peer_limit),
             ComparePeerByMostActive);
@@ -2553,24 +2604,25 @@ void tr_peerMgr::reconnect_pulse()
     auto bad_peers_buf = bad_peers_t{};
     for (auto* const tor : torrents_)
     {
+        // Keep pending stop/completeness work for inactive torrents too, but visit
+        // each torrent only once for upkeep, disconnects and its peer limit.
+        tor->do_idle_work();
         auto* const swarm = tor->swarm;
 
         if (!swarm->is_running)
         {
-            swarm->remove_all_peers();
+            if (!swarm->peers.empty())
+            {
+                swarm->remove_all_peers();
+            }
         }
         else
         {
             close_bad_peers(swarm, now_sec, bad_peers_buf);
-        }
-    }
-
-    // if we're over the per-torrent peer limits, cull some peers
-    for (auto* const tor : torrents_)
-    {
-        if (tor->is_running())
-        {
-            enforceSwarmPeerLimit(tor->swarm, tor->peer_limit());
+            if (tor->is_running())
+            {
+                enforceSwarmPeerLimit(swarm, tor->peer_limit());
+            }
         }
     }
 
@@ -2692,17 +2744,12 @@ void tr_peerMgr::bandwidth_pulse()
 
     auto const lock = unique_lock();
 
+    session->disk_cache().pulse();
     pumpAllPeers(this);
 
     // allocate bandwidth to the peers
     static auto constexpr Msec = std::chrono::duration_cast<std::chrono::milliseconds>(BandwidthTimerPeriod).count();
     session->top_bandwidth_.allocate(Msec);
-
-    // torrent upkeep
-    for (auto* const tor : torrents_)
-    {
-        tor->do_idle_work();
-    }
 
     reconnect_pulse();
 }
@@ -2848,8 +2895,9 @@ void get_peer_candidates(size_t global_peer_limit, tr_torrents& torrents, tr_pee
         return;
     }
 
-    auto candidates = std::vector<peer_candidate>{};
-    candidates.reserve(tr_peer_info::known_connectable_count());
+    auto const compare = [](auto const& a, auto const& b) { return a.score < b.score; };
+    auto candidates = tr_top_candidates<
+        peer_candidate, tr_peerMgr::OutboundCandidates::requested_inline_size, decltype(compare)>{ compare };
 
     /* populate the candidate array */
     auto salter = tr_salt_shaker{};
@@ -2886,21 +2934,13 @@ void get_peer_candidates(size_t global_peer_limit, tr_torrents& torrents, tr_pee
         {
             if (is_peer_candidate(tor, *peer_info, now))
             {
-                candidates.emplace_back(getPeerCandidateScore(tor, *peer_info, salter()), tor, peer_info.get());
+                candidates.push({ getPeerCandidateScore(tor, *peer_info, salter()), tor, peer_info.get() });
             }
         }
     }
 
-    // only keep the best `max` candidates
-    auto const n_keep = std::min(tr_peerMgr::OutboundCandidates::requested_inline_size, std::size(candidates));
-    std::ranges::partial_sort(
-        candidates,
-        std::begin(candidates) + static_cast<decltype(candidates)::difference_type>(n_keep),
-        [](auto const& a, auto const& b) { return a.score < b.score; });
-    candidates.resize(n_keep);
-
     // put the best candidates at the end of the list
-    for (auto const& candidate : std::ranges::reverse_view(candidates))
+    for (auto const& candidate : std::ranges::reverse_view(candidates.finish()))
     {
         setme.emplace_back(candidate.tor->id(), candidate.peer_info->listen_socket_address());
     }
@@ -3083,20 +3123,36 @@ void tr_peerMgr::make_new_peer_connections()
 
     auto const lock = unique_lock();
 
+    // Carry half an attempt across 500 ms pulses, but never bank idle credit.
+    auto const rate = std::min(session->settings().peer_connection_attempts_per_second, MaxConnectionsPerSecond);
+    connection_attempt_half_credit_ += rate;
+    auto const allowance = connection_attempt_half_credit_ / 2U;
+    connection_attempt_half_credit_ %= 2U;
+    if (allowance == 0U)
+    {
+        return;
+    }
+
     // get the candidates if we need to
     auto& candidates = outbound_candidates_;
     if (std::empty(candidates))
     {
         get_peer_candidates(session->peerLimit(), torrents_, candidates);
+        // Keep at most two seconds of candidates even with slower pacing.
+        if (auto const capacity = rate * 2U; std::size(candidates) > capacity)
+        {
+            candidates.erase(std::begin(candidates), std::end(candidates) - capacity);
+        }
     }
 
     // initiate connections to the last N candidates
-    auto const n_this_pass = std::min(std::size(candidates), MaxConnectionsPerPulse);
+    auto const n_this_pass = std::min(std::size(candidates), allowance);
     for (auto const& [tor_id, sock_addr] : candidates | std::views::reverse | std::views::take(n_this_pass))
     {
-        if (auto* const tor = torrents_.get(tor_id); tor != nullptr)
+        if (auto* const tor = torrents_.get(tor_id); tor != nullptr && tor->is_running())
         {
-            if (auto const& peer_info = tor->swarm->get_existing_peer_info(sock_addr))
+            if (auto const& peer_info = tor->swarm->get_existing_peer_info(sock_addr);
+                peer_info && tor->swarm->peerCount() < tor->peer_limit() && is_peer_candidate(tor, *peer_info, tr_time()))
             {
                 // BEP 55: a candidate still flagged as a holepunch attempt is in sticky
                 // fast-retry mode. Re-issue the uTP-forced punch instead of a normal

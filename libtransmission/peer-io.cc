@@ -212,6 +212,7 @@ void tr_peerIo::set_socket(std::shared_ptr<tr_peer_socket> socket_in)
     close(); // tear down the previous socket, if any
 
     socket_ = std::move(socket_in);
+    read_failed_ = false;
     socket_address_ = socket_->socket_address();
 
     socket_->set_read_cb(
@@ -427,6 +428,10 @@ void tr_peerIo::can_read_wrapper(size_t bytes_transferred)
             break;
 
         case ReadState::Err:
+            // Peer removal is deferred. Stop reading immediately so rejected
+            // input cannot keep growing the buffer until the next peer pulse.
+            read_failed_ = true;
+            set_enabled(tr_direction::Down, false);
             err = true;
             break;
         }
@@ -437,7 +442,7 @@ size_t tr_peerIo::try_read(size_t max)
 {
     static auto constexpr Dir = tr_direction::Down;
 
-    if (max == 0U)
+    if (max == 0U || read_failed_)
     {
         return {};
     }
@@ -503,7 +508,7 @@ void tr_peerIo::set_enabled(tr_direction dir, bool is_enabled)
     }
     else
     {
-        socket_->set_read_enabled(is_enabled);
+        socket_->set_read_enabled(is_enabled && !read_failed_);
     }
 }
 
@@ -541,7 +546,15 @@ void tr_peerIo::write_bytes(void const* bytes, size_t n_bytes, bool is_piece_dat
         return;
     }
 
-    outbuf_info_.emplace_back(n_bytes, is_piece_data);
+    // Accounting only needs boundaries between protocol and piece data.
+    if (!outbuf_info_.empty() && outbuf_info_.back().second == is_piece_data)
+    {
+        outbuf_info_.back().first += n_bytes;
+    }
+    else
+    {
+        outbuf_info_.emplace_back(n_bytes, is_piece_data);
+    }
 
     auto [resbuf, reslen] = outbuf_.reserve_space(n_bytes);
     filter_.encrypt(static_cast<std::byte const*>(bytes), n_bytes, resbuf);

@@ -3,6 +3,7 @@
 // or any future license endorsed by Mnemosyne LLC.
 // License text can be found in the licenses/ folder.
 
+#include <array>
 #include <cstddef> // std::byte
 #include <cstdint> // uint16_t, uint32_t, uint64_t
 #include <memory>
@@ -16,6 +17,20 @@
 using BufferTest = ::tr::test::TransmissionTest;
 using namespace std::literals;
 using Buffer = tr::StackBuffer<1024, std::byte>;
+
+TEST_F(BufferTest, ViewReadsWithoutChangingSource)
+{
+    auto const source = std::string{ "abcdefgh" };
+    auto view = tr::BufferView<char>{ std::span{ source.data(), source.size() } };
+    EXPECT_EQ(source.data(), view.data());
+    auto first = std::array<char, 3>{};
+    view.to_buf(first.data(), first.size());
+    EXPECT_EQ("abc", std::string(first.data(), first.size()));
+    EXPECT_EQ("defgh", view.to_string());
+    view.drain(100);
+    EXPECT_TRUE(view.empty());
+    EXPECT_EQ("abcdefgh", source);
+}
 
 TEST_F(BufferTest, startsWithInSingleSegment)
 {

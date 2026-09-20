@@ -38,6 +38,7 @@
 #include "libtransmission/error.h"
 #include "libtransmission/file-utils.h"
 #include "libtransmission/log.h"
+#include "libtransmission/security-log.h"
 #include "libtransmission/net.h"
 #include "libtransmission/platform.h" /* tr_getWebClientDir() */
 #include "libtransmission/quark.h"
@@ -357,10 +358,8 @@ void handle_web_client(struct evhttp_request* req, tr_rpc_server const* server)
 #endif
             auto remote_port = ev_uint16_t{};
             evhttp_connection_get_peer(con, &remote_host, &remote_port);
-            tr_logAddWarn(
-                fmt::format(
-                    fmt::runtime(_("Rejected request from {host} (possible directory traversal attack)")),
-                    fmt::arg("host", remote_host)));
+            tr_security_log(tr_security_event::RpcAccess,
+                fmt::format("event=rpc_path_traversal_rejected source={}", remote_host != nullptr ? remote_host : "unknown"));
         }
         send_simple_response(req, HTTP_NOTFOUND);
     }
@@ -542,20 +541,19 @@ void handle_request(struct evhttp_request* req, void* arg)
     evhttp_add_header(output_headers, "Server", MY_REALM);
     add_clickjacking_prevention_headers(output_headers);
 
-    if (server->is_anti_brute_force_enabled() && server->login_attempts_ >= server->settings().anti_brute_force_limit)
+    auto const login_host = std::string{ remote_host != nullptr ? remote_host : "unknown" };
+    if (server->is_anti_brute_force_enabled() &&
+        server->login_limiter_.blocked(login_host, std::chrono::steady_clock::now()))
     {
-        tr_logAddWarn(
-            fmt::format(
-                fmt::runtime(_("Rejected request from {host} (brute force protection active)")),
-                fmt::arg("host", remote_host)));
-        send_simple_response(req, HttpErrorForbidden);
+        tr_security_log(tr_security_event::RpcBlocked, fmt::format("event=rpc_rate_limited source={}", login_host));
+        evhttp_add_header(output_headers, "Retry-After", "30");
+        send_simple_response(req, 429);
         return;
     }
 
     if (!is_address_allowed(server, remote_host))
     {
-        tr_logAddWarn(
-            fmt::format(fmt::runtime(_("Rejected request from {host} (IP not whitelisted)")), fmt::arg("host", remote_host)));
+        tr_security_log(tr_security_event::RpcAccess, fmt::format("event=rpc_access_denied source={}", login_host));
         send_simple_response(req, HttpErrorForbidden);
         return;
     }
@@ -577,21 +575,34 @@ void handle_request(struct evhttp_request* req, void* arg)
 
     if (!is_authorized(server, evhttp_find_header(input_headers, "Authorization")))
     {
-        tr_logAddWarn(
-            fmt::format(
-                fmt::runtime(_("Rejected request from {host} (failed authentication)")),
-                fmt::arg("host", remote_host)));
+        tr_security_log(tr_security_event::RpcAuth, fmt::format("event=rpc_auth_failed source={}", login_host));
         evhttp_add_header(output_headers, "WWW-Authenticate", "Basic realm=\"" MY_REALM "\"");
         if (server->is_anti_brute_force_enabled())
         {
-            ++server->login_attempts_;
+            server->login_limiter_.failed(
+                login_host, server->settings().anti_brute_force_limit, std::chrono::steady_clock::now());
         }
 
         send_simple_response(req, HttpErrorUnauthorized);
         return;
     }
 
-    server->login_attempts_ = 0;
+    server->login_limiter_.success(login_host);
+    if (server->is_password_enabled() && remote_host != nullptr)
+    {
+        auto const now = std::chrono::steady_clock::now();
+        auto const host = std::string{ remote_host };
+        auto const iter = server->successful_login_logins_.find(host);
+        if (iter == std::end(server->successful_login_logins_) || now - iter->second >= std::chrono::minutes{ 10 })
+        {
+            if (std::size(server->successful_login_logins_) >= 128U && iter == std::end(server->successful_login_logins_))
+            {
+                server->successful_login_logins_.erase(std::begin(server->successful_login_logins_));
+            }
+            server->successful_login_logins_.insert_or_assign(host, now);
+            tr_logAddInfo(fmt::format(fmt::runtime(_("Authenticated RPC access from {host}")), fmt::arg("host", remote_host)));
+        }
+    }
 
     // eg '/transmission/web/' and '/transmission/rpc'
     auto const& base_path = server->url();
@@ -623,8 +634,7 @@ void handle_request(struct evhttp_request* req, void* arg)
             "<p>This requirement has been added to help prevent "
             "<a href=\"https://en.wikipedia.org/wiki/DNS_rebinding\">DNS Rebinding</a> "
             "attacks.</p>";
-        tr_logAddWarn(
-            fmt::format(fmt::runtime(_("Rejected request from {host} (Host not whitelisted)")), fmt::arg("host", remote_host)));
+        tr_security_log(tr_security_event::RpcAccess, fmt::format("event=rpc_access_denied source={}", login_host));
         send_simple_response(req, 421, Body);
     }
     else if (
@@ -803,6 +813,9 @@ void start_server(tr_rpc_server* server)
 
     auto* const base = server->session->event_base();
     auto* const httpd = evhttp_new(base);
+    evhttp_set_max_headers_size(httpd, 32U * 1024U);
+    evhttp_set_max_body_size(httpd, 64U * 1024U * 1024U);
+    evhttp_set_timeout(httpd, 30);
 
     evhttp_set_allowed_methods(httpd, EVHTTP_REQ_GET | EVHTTP_REQ_POST | EVHTTP_REQ_OPTIONS);
 
@@ -963,7 +976,7 @@ void tr_rpc_server::set_password(std::string_view password) noexcept
 {
     auto const is_salted = tr_ssha1_test(password);
     settings_.salted_password = is_salted ? password : tr_ssha1(password);
-    tr_logAddDebug(fmt::format("setting our salted password to '{:s}'", settings_.salted_password));
+    tr_logAddDebug("RPC password updated");
 }
 
 void tr_rpc_server::set_password_enabled(bool enabled)
@@ -983,7 +996,7 @@ void tr_rpc_server::set_anti_brute_force_enabled(bool enabled) noexcept
 
     if (!enabled)
     {
-        login_attempts_ = 0;
+        login_limiter_.clear();
     }
 }
 

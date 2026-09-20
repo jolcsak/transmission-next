@@ -57,28 +57,35 @@ tr_session_stats tr_stats::load_old_stats(std::string_view const config_dir)
     return ret;
 }
 
-void tr_stats::save() const
+bool tr_stats::save() const
 {
     auto var = tr_variant{ serializer::save(cumulative(), Fields) };
+    var.get_if<tr_variant::Map>()->try_emplace(tr_quark_new("transfer_history"), history());
     api_compat::convert_outgoing_data(var);
-    tr_variant_serde::json().to_file(var, tr_pathbuf{ config_dir_, "/stats.json"sv });
+    return tr_variant_serde::json().to_file(var, tr_pathbuf{ config_dir_, "/stats.json"sv });
 }
 
-void tr_stats::save_if_dirty()
+void tr_stats::save_if_dirty(Clock::time_point const now)
 {
-    if (!is_dirty_)
+    // Resume files keep their own cadence; only cumulative statistics wait.
+    if (!is_dirty_ || now - last_save_ < SaveInterval)
     {
         return;
     }
 
-    save();
-
-    is_dirty_ = false;
+    if (save())
+    {
+        is_dirty_ = false;
+        last_save_ = now;
+    }
 }
 
 void tr_stats::clear()
 {
     single_ = old_ = Zero;
+    days_ = {};
+    hours_ = {};
+    history_started_ = tr_time();
     start_time_ = tr_time();
     is_dirty_ = true;
 }
@@ -101,4 +108,88 @@ tr_session_stats tr_stats::add(tr_session_stats const& a, tr_session_stats const
     ret.secondsActive = a.secondsActive + b.secondsActive;
     ret.ratio = tr_getRatio(ret.uploadedBytes, ret.downloadedBytes);
     return ret;
+}
+
+void tr_stats::record(uint32_t up, uint32_t down, time_t now) noexcept
+{
+    if (now <= 0 || (up == 0 && down == 0))
+        return;
+    auto const update = [=](auto& buckets, int64_t interval)
+    {
+        auto const index = int64_t{ now } / interval;
+        auto& bucket = buckets[static_cast<size_t>(index) % buckets.size()];
+        auto const start = index * interval;
+        // A backward clock must not evict a newer bucket in the same ring slot.
+        if (bucket.start > start)
+            return;
+        if (bucket.start != start)
+            bucket = Bucket{ start, 0, 0 };
+        bucket.up += up;
+        bucket.down += down;
+    };
+    update(days_, 86400);
+    update(hours_, 3600);
+}
+
+tr_variant tr_stats::history(time_t now) const
+{
+    auto result = tr_variant::Map{};
+    result.try_emplace(tr_quark_new("started_at"), history_started_);
+    result.try_emplace(tr_quark_new("now"), now);
+    result.try_emplace(tr_quark_new("timezone"), "UTC");
+    auto const pack = [now](auto const& buckets, int64_t interval)
+    {
+        auto list = tr_variant::Vector{};
+        for (auto const& bucket : buckets)
+        {
+            if (bucket.start <= 0 || bucket.start > now ||
+                bucket.start < (now / interval - int64_t{ buckets.size() } + 1) * interval)
+                continue;
+            auto row = tr_variant::Vector{};
+            row.emplace_back(bucket.start);
+            row.emplace_back(bucket.down);
+            row.emplace_back(bucket.up);
+            list.emplace_back(std::move(row));
+        }
+        return list;
+    };
+    result.try_emplace(tr_quark_new("days"), pack(days_, 86400));
+    result.try_emplace(tr_quark_new("hours"), pack(hours_, 3600));
+    return result;
+}
+
+void tr_stats::load_history(time_t now)
+{
+    history_started_ = now;
+    auto value = tr_variant_serde::json().parse_file(tr_pathbuf{ config_dir_, "/stats.json"sv });
+    auto const* root = value ? value->get_if<tr_variant::Map>() : nullptr;
+    auto const* history = root ? root->find_if<tr_variant::Map>(tr_quark_new("transfer_history")) : nullptr;
+    if (history == nullptr)
+        return;
+    auto const started = history->value_if<int64_t>(tr_quark_new("started_at")).value_or(0);
+    if (started <= 0 || started > now)
+        return;
+    history_started_ = started;
+    auto const unpack = [&](auto& buckets, char const* key, int64_t interval)
+    {
+        auto const* rows = history->find_if<tr_variant::Vector>(tr_quark_new(key));
+        if (rows == nullptr || rows->size() > buckets.size())
+            return;
+        for (auto const& item : *rows)
+        {
+            auto const* row = item.get_if<tr_variant::Vector>();
+            if (row == nullptr || row->size() != 3)
+                continue;
+            auto const start = (*row)[0].value_if<int64_t>().value_or(0);
+            auto const down = (*row)[1].value_if<int64_t>().value_or(-1);
+            auto const up = (*row)[2].value_if<int64_t>().value_or(-1);
+            if (start <= 0 || start > now || start % interval != 0 || down < 0 || up < 0 ||
+                start < (now / interval - int64_t{ buckets.size() } + 1) * interval)
+                continue;
+            buckets[static_cast<size_t>(start / interval) % buckets.size()] =
+                Bucket{ start, static_cast<uint64_t>(up), static_cast<uint64_t>(down) };
+        }
+    };
+    unpack(days_, "days", 86400);
+    unpack(hours_, "hours", 3600);
 }

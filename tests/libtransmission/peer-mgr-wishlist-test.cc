@@ -4,6 +4,8 @@
 // License text can be found in the licenses/ folder.
 
 #include <array>
+#include <chrono>
+#include <iostream>
 #include <cstddef> // size_t
 #include <map>
 #include <set>
@@ -86,6 +88,109 @@ protected:
         return true;
     };
 };
+
+TEST_F(PeerMgrWishlistTest, spanConstructionRegression)
+{
+    auto mediator = MockMediator{};
+    for (tr_piece_index_t piece = 0; piece < 8; ++piece)
+    {
+        mediator.block_span_[piece] = { piece * 512U, (piece + 1U) * 512U };
+        mediator.piece_replication_[piece] = 1;
+        mediator.client_wants_piece_.insert(piece);
+    }
+    auto wishlist = Wishlist{ mediator };
+    auto const started = std::chrono::steady_clock::now();
+    for (int repeat = 0; repeat < 500; ++repeat)
+    {
+        auto const spans = wishlist.next(4096, PeerHasAllPieces);
+        ASSERT_EQ(1U, spans.size());
+        EXPECT_EQ(0U, spans.front().begin);
+        EXPECT_EQ(4096U, spans.front().end);
+    }
+    std::cout << "span_benchmark_us=" << std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - started).count() << '\n';
+    for (tr_block_index_t block = 0; block < 4096; block += 2)
+    {
+        wishlist.on_sent_request({ block, block + 1U });
+    }
+    auto const spans = wishlist.next(4096, PeerHasAllPieces);
+    ASSERT_EQ(2048U, spans.size());
+    for (size_t i = 0; i < spans.size(); ++i)
+    {
+        EXPECT_EQ(i * 2U + 1U, spans[i].begin);
+        EXPECT_EQ(i * 2U + 2U, spans[i].end);
+    }
+    auto const limited = wishlist.next(17, [](auto piece) { return piece % 2 == 0; });
+    size_t count = 0;
+    for (auto const span : limited)
+    {
+        EXPECT_EQ(0U, (span.begin / 512U) % 2U);
+        count += span.end - span.begin;
+    }
+    EXPECT_EQ(17U, count);
+}
+
+TEST_F(PeerMgrWishlistTest, receivedDataWinsOverOutstandingRequestsAtEqualRarity)
+{
+    auto mediator = MockMediator{};
+    mediator.block_span_[0] = { .begin = 0, .end = 8 };
+    mediator.block_span_[1] = { .begin = 8, .end = 16 };
+    mediator.client_wants_piece_ = { 0, 1 };
+    mediator.piece_replication_ = { { 0, 1 }, { 1, 1 } };
+    auto wishlist = Wishlist{ mediator };
+    wishlist.on_sent_request({ .begin = 0, .end = 7 });
+    mediator.client_has_block_.insert(8);
+    wishlist.on_got_block(8);
+
+    auto spans = wishlist.next(1, PeerHasAllPieces);
+    ASSERT_EQ(1U, spans.size());
+    EXPECT_EQ(9U, spans[0].begin);
+
+    // Switching to sequential mode must disable completion preference immediately.
+    mediator.is_sequential_download_ = true;
+    wishlist.on_sequential_download_changed();
+    spans = wishlist.next(1, PeerHasAllPieces);
+    ASSERT_EQ(1U, spans.size());
+    EXPECT_EQ(7U, spans[0].begin);
+
+    mediator.is_sequential_download_ = false;
+    wishlist.on_sequential_download_changed();
+    // A failed hash invalidates the received-data preference along with the piece.
+    mediator.client_has_block_.clear();
+    wishlist.on_got_bad_piece(1);
+    spans = wishlist.next(1, PeerHasAllPieces);
+    ASSERT_EQ(1U, spans.size());
+    EXPECT_EQ(7U, spans[0].begin);
+}
+
+TEST_F(PeerMgrWishlistTest, rarityAndFilePriorityPrecedePartialCompletion)
+{
+    auto mediator = MockMediator{};
+    mediator.block_span_[0] = { .begin = 0, .end = 8 };
+    mediator.block_span_[1] = { .begin = 8, .end = 16 };
+    mediator.client_wants_piece_ = { 0, 1 };
+    mediator.piece_replication_ = { { 0, 1 }, { 1, 2 } };
+    for (auto block = 8U; block < 15U; ++block)
+    {
+        mediator.client_has_block_.insert(block);
+    }
+    auto wishlist = Wishlist{ mediator };
+    auto spans = wishlist.next(1, PeerHasAllPieces);
+    ASSERT_EQ(1U, spans.size());
+    EXPECT_EQ(0U, spans[0].begin);
+
+    // Equal rarity: the received piece wins.
+    wishlist.on_got_have(0);
+    spans = wishlist.next(1, PeerHasAllPieces);
+    ASSERT_EQ(1U, spans.size());
+    EXPECT_EQ(15U, spans[0].begin);
+
+    mediator.piece_priority_[0] = TR_PRI_HIGH;
+    wishlist.on_priority_changed();
+    spans = wishlist.next(1, PeerHasAllPieces);
+    ASSERT_EQ(1U, spans.size());
+    EXPECT_EQ(0U, spans[0].begin);
+}
 
 TEST_F(PeerMgrWishlistTest, doesNotRequestPiecesThatAreNotWanted)
 {

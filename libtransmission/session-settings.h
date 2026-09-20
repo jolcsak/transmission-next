@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <chrono>
 #include <concepts>
 #include <cstddef> // size_t
@@ -81,6 +82,7 @@ public:
     }
 
     bool announce_ip_enabled = false;
+    bool auto_disk_profile_enabled = false;
     bool blocklist_enabled = false;
     bool dht_enabled = true;
     bool download_queue_enabled = true;
@@ -108,8 +110,15 @@ public:
     bool utp_enabled = true;
     double ratio_limit = 2.0;
     size_t unused_cache_size_mbytes = 4U; // TODO(TR5): remove
+    size_t disk_write_batch_size_kib = 64U;
+
+    [[nodiscard]] size_t disk_write_batch_size() const noexcept
+    {
+        return std::clamp(disk_write_batch_size_kib, size_t{ 64U }, size_t{ 256U }) * 1024U;
+    }
     size_t download_queue_size = 5U;
     size_t peer_limit_global = TrDefaultPeerLimitGlobal;
+    size_t peer_connection_attempts_per_second = 18U;
     size_t peer_limit_per_torrent = TrDefaultPeerLimitTorrent;
     size_t queue_stalled_minutes = 30U;
     size_t reqq = 2000U;
@@ -164,6 +173,8 @@ public:
         Field<&SessionSettings::unused_cache_size_mbytes>{ TR_KEY_cache_size_mib },
         Field<&SessionSettings::default_trackers_str>{ TR_KEY_default_trackers },
         Field<&SessionSettings::dht_enabled>{ TR_KEY_dht_enabled },
+        Field<&SessionSettings::auto_disk_profile_enabled>{ TR_KEY_auto_disk_profile_enabled },
+        Field<&SessionSettings::disk_write_batch_size_kib>{ TR_KEY_disk_write_batch_size_kib },
         Field<&SessionSettings::download_dir>{ TR_KEY_download_dir },
         Field<&SessionSettings::download_queue_enabled>{ TR_KEY_download_queue_enabled },
         Field<&SessionSettings::download_queue_size>{ TR_KEY_download_queue_size },
@@ -177,6 +188,7 @@ public:
         Field<&SessionSettings::lpd_enabled>{ TR_KEY_lpd_enabled },
         Field<&SessionSettings::log_level>{ TR_KEY_message_level },
         Field<&SessionSettings::peer_congestion_algorithm>{ TR_KEY_peer_congestion_algorithm },
+        Field<&SessionSettings::peer_connection_attempts_per_second>{ TR_KEY_peer_connection_attempts_per_second },
         Field<&SessionSettings::peer_limit_global>{ TR_KEY_peer_limit_global },
         Field<&SessionSettings::peer_limit_per_torrent>{ TR_KEY_peer_limit_per_torrent },
         Field<&SessionSettings::peer_port>{ TR_KEY_peer_port },

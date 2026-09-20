@@ -9,6 +9,7 @@
 #error only libtransmission should #include this header.
 #endif
 
+#include <atomic>
 #include <cstddef> // size_t
 #include <cstdint> // uint64_t, uint16_t
 #include <ctime>
@@ -29,6 +30,7 @@
 #include "libtransmission/block-info.h"
 #include "libtransmission/completion.h"
 #include "libtransmission/crypto-utils.h"
+#include "libtransmission/disk-profile.h"
 #include "libtransmission/file-piece-map.h"
 #include "libtransmission/interned-string.h"
 #include "libtransmission/log.h"
@@ -337,6 +339,11 @@ struct tr_torrent
         return completion_.has_piece(piece);
     }
 
+    [[nodiscard]] uint64_t interest_revision() const noexcept
+    {
+        return interest_revision_.load(std::memory_order_relaxed);
+    }
+
     [[nodiscard]] constexpr auto has_block(tr_block_index_t block) const
     {
         return completion_.has_block(block);
@@ -442,6 +449,41 @@ struct tr_torrent
     }
 
     /// LOCATION
+
+    void refresh_disk_profile(bool force = false);
+    [[nodiscard]] auto const& disk_profile() const noexcept
+    {
+        return disk_profile_;
+    }
+    [[nodiscard]] bool disk_pressured() const noexcept
+    {
+        return disk_latency_.pressured();
+    }
+    [[nodiscard]] bool disk_load_measured() const noexcept
+    {
+        return disk_latency_.has_recent_sample();
+    }
+    [[nodiscard]] auto disk_load_level() const noexcept
+    {
+        return disk_latency_.level();
+    }
+    void record_disk_write(tr_disk_latency::Clock::duration elapsed, tr_disk_latency::Clock::time_point now)
+    {
+        disk_latency_.observe(elapsed, now, disk_profile_.kind);
+    }
+
+    [[nodiscard]] bool disk_critical() const noexcept
+    {
+        return disk_latency_.level() == tr_disk_latency::Level::Critical;
+    }
+    [[nodiscard]] size_t disk_request_limit() const noexcept
+    {
+        return disk_latency_.request_limit(disk_profile_.kind);
+    }
+    void record_disk_read(tr_disk_latency::Clock::duration elapsed, tr_disk_latency::Clock::time_point now)
+    {
+        disk_latency_.observe(elapsed, now, disk_profile_.kind, tr_disk_latency::Operation::Read);
+    }
 
     [[nodiscard]] constexpr tr_interned_string current_dir() const noexcept
     {
@@ -737,12 +779,14 @@ struct tr_torrent
             return is_done() ? TR_STATUS_SEED : TR_STATUS_DOWNLOAD;
         }
 
-        if (is_queued(tr_direction::Up) && session->queueEnabled(tr_direction::Up))
+        if (is_queued(tr_direction::Up) &&
+            (session->queueEnabled(tr_direction::Up) || session->settings().auto_disk_profile_enabled))
         {
             return TR_STATUS_SEED_WAIT;
         }
 
-        if (is_queued(tr_direction::Down) && session->queueEnabled(tr_direction::Down))
+        if (is_queued(tr_direction::Down) &&
+            (session->queueEnabled(tr_direction::Down) || session->settings().auto_disk_profile_enabled))
         {
             return TR_STATUS_DOWNLOAD_WAIT;
         }
@@ -1257,6 +1301,7 @@ private:
         auto const lock = unique_lock();
 
         files_wanted_.set(files, n_files, wanted);
+        interest_revision_.fetch_add(1, std::memory_order_relaxed);
         completion_.invalidate_size_when_done();
         files_wanted_changed_(this, files, n_files, wanted);
 
@@ -1294,6 +1339,7 @@ private:
     void set_has_piece(tr_piece_index_t piece, bool has)
     {
         completion_.set_has_piece(piece, has);
+        interest_revision_.fetch_add(1, std::memory_order_relaxed);
     }
 
     constexpr void bump_date_changed(time_t when)
@@ -1391,6 +1437,9 @@ private:
     // Where the files are now.
     // Will equal either download_dir or incomplete_dir
     tr_interned_string current_dir_;
+    tr_disk_profile disk_profile_;
+    tr_disk_latency disk_latency_;
+    tr_disk_latency::Clock::time_point next_disk_probe_{};
 
     tr_sha1_digest_t obfuscated_hash_ = {};
 
@@ -1446,6 +1495,7 @@ private:
     bool finished_seeding_by_idle_ = false;
 
     bool needs_completeness_check_ = true;
+    std::atomic<uint64_t> interest_revision_{ 0 };
 
     bool sequential_download_ = false;
 

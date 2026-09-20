@@ -1,0 +1,16 @@
+{
+  "rpc": {"url": "http://127.0.0.1:9091/transmission/rpc"},
+  "interval_seconds": 30,
+  "mqtt": {"enabled": false},
+  "influxdb": {
+    "enabled": true,
+    "url": "https://influx.example.com:8086",
+    "org": "home",
+    "bucket": "transmission",
+    "token_file": "/etc/transmission-mqtt/influx-token",
+    "instance": "torrent-server",
+    "flush_seconds": 60,
+    "buffer_bytes": 262144,
+    "include_directories": false
+  }
+}

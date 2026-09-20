@@ -6,6 +6,7 @@
 import { FileRow } from './file-row.js';
 import { Formatter } from './formatter.js';
 import { Torrent } from './torrent.js';
+import { VisibleInterval } from './visible-interval.js';
 import { Utils, createTextualTabsContainer, setTextContent } from './utils.js';
 
 const peer_column_classes = [
@@ -28,7 +29,7 @@ export class Inspector extends EventTarget {
     this.controller = controller;
     this.elements = this._create();
     this.current_page = this.elements.info.root;
-    this.interval = setInterval(this._refreshTorrents.bind(this), 3000);
+    this.interval = new VisibleInterval(this._refreshTorrents.bind(this), 3000);
     this.name = 'inspector';
     this.selection_listener = (event_) =>
       this._setTorrents(event_.selected, true);
@@ -51,7 +52,7 @@ export class Inspector extends EventTarget {
 
   close() {
     if (!this.closed) {
-      clearInterval(this.interval);
+      this.interval.stop();
       this._setTorrents([]);
       this.elements.root.remove();
       this.controller.removeEventListener(
@@ -203,6 +204,9 @@ export class Inspector extends EventTarget {
 
     const on_activated = (page) => {
       this.current_page = page;
+      if (this.torrents) {
+        this._refreshTorrents();
+      }
       this._updateCurrentPage();
     };
 
@@ -249,13 +253,34 @@ export class Inspector extends EventTarget {
     const ids = torrents.map((t) => t.getId());
 
     if (ids && ids.length > 0) {
-      const fields = ['id', ...Torrent.Fields.StatsExtra];
+      const deferred = new Set([
+        'file_stats',
+        'peers',
+        'webseeds_ex',
+        'tracker_stats',
+      ]);
+      const fields = ['id'];
+      if (this.current_page === this.elements.info.root) {
+        fields.push(
+          ...Torrent.Fields.StatsExtra.filter((field) => !deferred.has(field)),
+        );
+      }
+      if (this.current_page === this.elements.files.root) {
+        fields.push('file_stats');
+      }
+      if (this.current_page === this.elements.peers.root) {
+        fields.push('peers', 'webseeds_ex');
+      }
+      if (this.current_page === this.elements.tiers.root) {
+        fields.push('tracker_stats');
+      }
       if (Inspector._needsExtraInfo(torrents)) {
         fields.push(...Torrent.Fields.InfoExtra);
       }
 
-      controller.updateTorrents(ids, fields);
+      return controller.updateTorrents(ids, fields);
     }
+    return null;
   }
 
   _updateCurrentPage() {

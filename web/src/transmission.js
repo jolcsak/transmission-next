@@ -29,6 +29,7 @@ import {
   setTextContent,
 } from './utils.js';
 import Clusterize from 'clusterize.js';
+import { VisibleInterval } from './visible-interval.js';
 
 export class Transmission extends EventTarget {
   constructor(action_manager, notifications, prefs) {
@@ -386,20 +387,27 @@ export class Transmission extends EventTarget {
   }
 
   _generateTorrentRowHTML(torrent) {
-    // Use existing renderers to create a temporary DOM element, then extract HTML
+    // Only the serialized HTML escapes this method. Reuse one detached row
+    // per display mode instead of allocating a DOM tree for every torrent.
     const isCompact = this.prefs.display_mode === Prefs.DisplayCompact;
-    const renderer = isCompact
-      ? new TorrentRendererCompact()
-      : new TorrentRendererFull();
-
-    // Create temporary row using existing renderer
-    const tempRow = renderer.createRow(torrent);
+    this._rowTemplates ??= new Map();
+    if (!this._rowTemplates.has(isCompact)) {
+      const renderer = isCompact
+        ? new TorrentRendererCompact()
+        : new TorrentRendererFull();
+      this._rowTemplates.set(isCompact, {
+        renderer,
+        row: renderer.createRow(torrent),
+      });
+    }
+    const { renderer, row: tempRow } = this._rowTemplates.get(isCompact);
     tempRow.dataset.torrentId = torrent.getId();
 
     // Add selection class if needed
-    if (this._selectedTorrentIds.has(torrent.getId())) {
-      tempRow.classList.add('selected');
-    }
+    tempRow.classList.toggle(
+      'selected',
+      this._selectedTorrentIds.has(torrent.getId()),
+    );
 
     // Render the content using existing renderer
     renderer.render(this, torrent, tempRow);
@@ -423,7 +431,7 @@ export class Transmission extends EventTarget {
   }
 
   loadDaemonPrefs() {
-    this.remote.loadDaemonPrefs((data) => {
+    return this.remote.loadDaemonPrefs((data) => {
       this.session_properties = data.result;
       this._openTorrentFromUrl();
     });
@@ -493,11 +501,13 @@ export class Transmission extends EventTarget {
       }
 
       case Prefs.RefreshRate: {
-        clearInterval(this.refreshTorrentsInterval);
+        this.refreshTorrentsInterval?.stop();
         const callback = this.refreshTorrents.bind(this);
         const pref = this.prefs.refresh_rate_sec;
         const msec = pref > 0 ? pref * 1000 : 1000;
-        this.refreshTorrentsInterval = setInterval(callback, msec);
+        this.refreshTorrentsInterval = new VisibleInterval(callback, msec, () =>
+          this._initializeTorrents(),
+        );
         break;
       }
 
@@ -912,14 +922,14 @@ export class Transmission extends EventTarget {
   // turn the periodic ajax session refresh on & off
   togglePeriodicSessionRefresh(enabled) {
     if (!enabled && this.sessionInterval) {
-      clearInterval(this.sessionInterval);
+      this.sessionInterval.stop();
       delete this.sessionInterval;
     }
     if (enabled) {
       this.loadDaemonPrefs();
       if (!this.sessionInterval) {
         const msec = 8000;
-        this.sessionInterval = setInterval(
+        this.sessionInterval = new VisibleInterval(
           this.loadDaemonPrefs.bind(this),
           msec,
         );
@@ -950,7 +960,7 @@ export class Transmission extends EventTarget {
   }
 
   updateTorrents(ids, fields) {
-    this.remote.updateTorrents(ids, fields, (table, removed_ids) => {
+    return this.remote.updateTorrents(ids, fields, (table, removed_ids) => {
       if (!ids) {
         this._torrents = {};
       }
@@ -996,6 +1006,10 @@ export class Transmission extends EventTarget {
         this._deleteTorrents(removed_ids);
         this.refilterAllSoon();
       }
+      if (!ids) {
+        this.refilterAllSoon();
+        this._dispatchSelectionChanged();
+      }
     });
   }
   /*
@@ -1020,12 +1034,12 @@ TODO: fix this when notifications get fixed
 
   refreshTorrents() {
     const fields = ['id', ...Torrent.Fields.Stats];
-    this.updateTorrents('recently_active', fields);
+    return this.updateTorrents('recently_active', fields);
   }
 
   _initializeTorrents() {
     const fields = ['id', ...Torrent.Fields.Metadata, ...Torrent.Fields.Stats];
-    this.updateTorrents(null, fields);
+    return this.updateTorrents(null, fields);
   }
 
   _onRowClicked(event_) {

@@ -454,7 +454,7 @@ std::string tr_variant_serde::to_string(tr_variant const& var) const
 
 bool tr_variant_serde::to_file(tr_variant const& var, std::string_view filename)
 {
-    tr_file_save(filename, to_string(var), &error_);
+    tr_file_save_if_changed(filename, to_string(var), &error_);
 
     if (error_)
     {

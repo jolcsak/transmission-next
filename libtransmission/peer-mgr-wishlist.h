@@ -50,16 +50,6 @@ private:
 
         [[nodiscard]] constexpr auto operator<=>(Candidate const& that) const noexcept
         {
-            // prefer pieces closer to completion, skipped in sequential mode
-            // where we want to prioritize pieces in order.
-            if (!is_sequential)
-            {
-                if (auto const val = std::size(unrequested) <=> std::size(that.unrequested); val != 0)
-                {
-                    return val;
-                }
-            }
-
             // prefer higher priority
             if (auto const val = that.priority <=> priority; val != 0)
             {
@@ -70,6 +60,20 @@ private:
             if (auto const val = replication <=> that.replication; val != 0)
             {
                 return val;
+            }
+
+            // Finish received pieces before opening new ones of equal rarity.
+            // Outstanding requests alone do not mean data has reached disk.
+            if (!is_sequential)
+            {
+                if (auto const val = that.has_received_blocks <=> has_received_blocks; val != 0)
+                {
+                    return val;
+                }
+                if (auto const val = std::size(unrequested) <=> std::size(that.unrequested); val != 0)
+                {
+                    return val;
+                }
             }
 
             return salt <=> that.salt;
@@ -104,6 +108,7 @@ private:
 
         tr_piece_index_t salt;
         bool is_sequential;
+        bool has_received_blocks = false;
     };
 
     using CandidateVec = std::vector<Candidate>;
@@ -132,6 +137,7 @@ public:
         if (auto const iter = find_by_block(block); iter != std::end(candidates_))
         {
             iter->unrequested.erase(block);
+            iter->has_received_blocks = true;
             resort_piece(iter);
         }
     }

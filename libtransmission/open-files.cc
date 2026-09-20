@@ -160,6 +160,7 @@ std::optional<tr_sys_file_t> tr_open_files::get(
 
     // create subfolders, if any
     auto error = tr_error{};
+#ifdef _WIN32
     if (writable)
     {
         if (auto const dir = tr_sys_path_dirname(filename); !tr_sys_dir_create(dir, TR_SYS_DIR_CREATE_PARENTS, 0777, &error))
@@ -173,7 +174,7 @@ std::optional<tr_sys_file_t> tr_open_files::get(
             return {};
         }
     }
-
+#endif
     auto const info = tr_sys_path_get_info(filename);
     bool const already_existed = info && info->isFile();
 
@@ -184,6 +185,9 @@ std::optional<tr_sys_file_t> tr_open_files::get(
     // open the file
     int flags = writable ? (TR_SYS_FILE_WRITE | TR_SYS_FILE_CREATE) : 0;
     flags |= TR_SYS_FILE_READ;
+#ifndef _WIN32
+    flags |= TR_SYS_FILE_SECURE;
+#endif
     auto const fd = tr_sys_file_open(filename, flags, 0666, &error);
     if (!is_open(fd))
     {

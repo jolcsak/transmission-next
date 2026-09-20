@@ -5,6 +5,8 @@
 
 #include "libtransmission/file-utils.h"
 
+#include <algorithm>
+#include <array>
 #include <string_view>
 #include <vector>
 
@@ -81,6 +83,43 @@ bool tr_file_read(std::string_view filename, std::vector<char>& contents, tr_err
 
     tr_sys_file_close(fd);
     return true;
+}
+
+bool tr_file_save_if_changed(std::string_view filename, std::string_view contents, tr_error* error)
+{
+    auto const info = tr_sys_path_get_info(filename);
+    if (info && info->isFile() && info->size == contents.size())
+    {
+        if (auto const fd = tr_sys_file_open(tr_pathbuf{ filename }, TR_SYS_FILE_READ, 0); fd != TR_BAD_SYS_FILE)
+        {
+            auto remaining = contents;
+            auto buffer = std::array<char, 16384>{};
+            auto equal = true;
+            while (!remaining.empty())
+            {
+                auto n_read = uint64_t{};
+                auto const count = std::min(remaining.size(), buffer.size());
+                if (!tr_sys_file_read(fd, buffer.data(), count, &n_read) || n_read == 0U ||
+                    std::string_view{ buffer.data(), static_cast<size_t>(n_read) } != remaining.substr(0, n_read))
+                {
+                    equal = false;
+                    break;
+                }
+                remaining.remove_prefix(n_read);
+            }
+            // An append between the initial stat and the read must not be skipped.
+            auto n_extra = uint64_t{};
+            equal = equal && tr_sys_file_read(fd, buffer.data(), 1, &n_extra) && n_extra == 0U;
+            auto const closed = tr_sys_file_close(fd);
+            if (equal && closed)
+            {
+                return true;
+            }
+        }
+    }
+
+    // Missing, different or unreadable files use the normal atomic save path.
+    return tr_file_save(filename, contents, error);
 }
 
 bool tr_file_save(std::string_view filename, std::string_view contents, tr_error* error)

@@ -52,7 +52,10 @@ enum tr_sys_file_open_flags_t : uint8_t
     TR_SYS_FILE_WRITE = (1 << 1),
     TR_SYS_FILE_CREATE = (1 << 2),
     TR_SYS_FILE_TRUNCATE = (1 << 3),
-    TR_SYS_FILE_SEQUENTIAL = (1 << 4)
+    TR_SYS_FILE_SEQUENTIAL = (1 << 4),
+    // POSIX: descriptor-relative traversal, no symlinks in any component.
+    // Creates missing parent directories only when CREATE is also requested.
+    TR_SYS_FILE_SECURE = (1 << 5)
 };
 
 enum tr_sys_file_lock_flags_t : uint8_t

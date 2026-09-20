@@ -1389,4 +1389,34 @@ TEST_F(FileTest, dirOpen)
     EXPECT_FALSE(err) << err;
 }
 
+#ifndef _WIN32
+TEST_F(FileTest, SecureOpenRejectsSymlinkComponentsAndSpecialFiles)
+{
+    auto const root = std::string{ sandboxDir() };
+    auto const target = root + "/target";
+    auto fd = tr_sys_file_open(target, TR_SYS_FILE_WRITE | TR_SYS_FILE_CREATE, 0600);
+    ASSERT_NE(TR_BAD_SYS_FILE, fd);
+    tr_sys_file_close(fd);
+    ASSERT_EQ(0, symlink(target.c_str(), (root + "/link").c_str()));
+    auto const secure = TR_SYS_FILE_READ | TR_SYS_FILE_WRITE | TR_SYS_FILE_CREATE | TR_SYS_FILE_SECURE;
+    EXPECT_EQ(TR_BAD_SYS_FILE, tr_sys_file_open(root + "/link", secure, 0600));
+    ASSERT_EQ(0, symlink(root.c_str(), (root + "/dirlink").c_str()));
+    EXPECT_EQ(TR_BAD_SYS_FILE, tr_sys_file_open(root + "/dirlink/target", secure, 0600));
+    EXPECT_EQ(TR_BAD_SYS_FILE, tr_sys_file_open(root + "/dirlink/newdir/file", secure, 0600));
+    EXPECT_FALSE(tr_sys_path_exists(root + "/newdir"));
+    EXPECT_EQ(TR_BAD_SYS_FILE, tr_sys_file_open(root + "/../escape", secure, 0600));
+    ASSERT_EQ(0, mkfifo((root + "/fifo").c_str(), 0600));
+    EXPECT_EQ(TR_BAD_SYS_FILE, tr_sys_file_open(root + "/fifo", secure, 0600));
+    fd = tr_sys_file_open(root + "/nested/child/file", secure, 0600);
+    ASSERT_NE(TR_BAD_SYS_FILE, fd);
+    EXPECT_TRUE(tr_sys_file_write(fd, "ok", 2, nullptr));
+    tr_sys_file_close(fd);
+    fd = tr_sys_file_open(root + "/nested/child/file", TR_SYS_FILE_READ | TR_SYS_FILE_SECURE, 0);
+    ASSERT_NE(TR_BAD_SYS_FILE, fd);
+    char contents[2] = {};
+    EXPECT_TRUE(tr_sys_file_read(fd, contents, sizeof(contents), nullptr));
+    EXPECT_EQ("ok", std::string(contents, 2));
+    tr_sys_file_close(fd);
+}
+#endif
 } // namespace tr::test

@@ -13,6 +13,7 @@
 #include <deque>
 #include <iterator>
 #include <memory> // std::unique_ptr
+#include <new>
 #include <optional>
 #include <queue>
 #include <ratio>
@@ -40,6 +41,8 @@
 #include "libtransmission/peer-io.h"
 #include "libtransmission/peer-mgr.h"
 #include "libtransmission/peer-msgs.h"
+#include "libtransmission/peer-message-limits.h"
+#include "libtransmission/security-log.h"
 #include "libtransmission/quark.h"
 #include "libtransmission/session.h"
 #include "libtransmission/string-utils.h"
@@ -222,7 +225,7 @@ struct tr_incoming
 {
     std::optional<uint32_t> length; // the full message payload length. Includes the +1 for id length
     std::optional<uint8_t> id; // the protocol message, e.g. BtPeerMsgs::Piece
-    MessageBuffer payload;
+    tr::StackBuffer<512U> payload;
 
     struct incoming_piece_data
     {
@@ -604,6 +607,12 @@ private:
     void update_desired_request_count()
     {
         desired_request_count_ = max_available_reqs();
+        if (session->settings().auto_disk_profile_enabled)
+        {
+            desired_request_count_ = std::min(desired_request_count_, tor_.disk_request_limit());
+            if (session->disk_cache().congested())
+                desired_request_count_ = std::min(desired_request_count_, size_t{ 8 });
+        }
     }
 
     void maybe_send_block_requests();
@@ -666,6 +675,42 @@ private:
     void send_ut_pex();
 
     tr_error_code_t client_got_block(std::span<uint8_t const> block_data, tr_block_index_t block);
+    tr_error_code_t flush_block_writes();
+
+    struct BlockWrites
+    {
+        explicit BlockWrites(size_t const capacity_in)
+            : capacity{ capacity_in }
+        {
+        }
+
+        void prepare_storage()
+        {
+            if (capacity > data.size())
+            {
+                // The HDD profile allocates only when payload arrives. Idle peers
+                // and the default SSD path retain their previous memory footprint.
+                extended.reset(new (std::nothrow) uint8_t[capacity]);
+                if (extended)
+                {
+                    data = { extended.get(), capacity };
+                }
+                else
+                {
+                    capacity = data.size();
+                }
+            }
+        }
+
+        std::array<uint8_t, 4U * tr_block_info::BlockSize> inline_data;
+        std::span<uint8_t> data{ inline_data };
+        std::unique_ptr<uint8_t[]> extended;
+        size_t capacity;
+        size_t size = 0U;
+        tr_block_index_t first = 0U;
+        tr_block_index_t count = 0U;
+    };
+    BlockWrites* block_writes_ = nullptr;
     ReadResult read_piece_data(MessageReader& payload);
     ReadResult process_peer_message(uint8_t id, MessageReader& payload);
 
@@ -786,42 +831,7 @@ private:
 
 [[nodiscard]] constexpr bool is_message_length_correct(tr_torrent const& tor, uint8_t id, uint32_t len)
 {
-    switch (id)
-    {
-    case BtPeerMsgs::Choke:
-    case BtPeerMsgs::Unchoke:
-    case BtPeerMsgs::Interested:
-    case BtPeerMsgs::NotInterested:
-    case BtPeerMsgs::FextHaveAll:
-    case BtPeerMsgs::FextHaveNone:
-        return len == 1U;
-
-    case BtPeerMsgs::Have:
-    case BtPeerMsgs::FextSuggest:
-    case BtPeerMsgs::FextAllowedFast:
-        return len == 5U;
-
-    case BtPeerMsgs::Bitfield:
-        return !tor.has_metainfo() || len == 1 + ((tor.piece_count() + 7U) / 8U);
-
-    case BtPeerMsgs::Request:
-    case BtPeerMsgs::Cancel:
-    case BtPeerMsgs::FextReject:
-        return len == 13U;
-
-    case BtPeerMsgs::Piece:
-        len -= sizeof(id) + sizeof(uint32_t /*piece*/) + sizeof(uint32_t /*offset*/);
-        return len <= tr_block_info::BlockSize;
-
-    case BtPeerMsgs::DhtPort:
-        return len == 3U;
-
-    case BtPeerMsgs::Ltep:
-        return len >= 2U;
-
-    default: // unrecognized message
-        return false;
-    }
+    return tr_peer_message_length_valid(id, len, tor.has_metainfo() ? std::optional<uint32_t>{ tor.piece_count() } : std::nullopt);
 }
 
 namespace protocol_send_message_helpers
@@ -1208,7 +1218,11 @@ void tr_peerMsgsImpl::send_ut_pex()
         }
     }
 
-    protocol_send_message(BtPeerMsgs::Ltep, ut_pex_id_, tr_variant_serde::benc().to_string(tr_variant{ std::move(map) }));
+    // An unchanged peer set has no update to announce.
+    if (!map.empty())
+    {
+        protocol_send_message(BtPeerMsgs::Ltep, ut_pex_id_, tr_variant_serde::benc().to_string(tr_variant{ std::move(map) }));
+    }
 }
 
 void tr_peerMsgsImpl::send_ltep_handshake()
@@ -1828,7 +1842,8 @@ ReadResult tr_peerMsgsImpl::read_piece_data(MessageReader& payload)
         return { ReadState::Err, len };
     }
 
-    if (tor_.has_block(block))
+    if (tor_.has_block(block) ||
+        (block_writes_->count != 0U && block >= block_writes_->first && block - block_writes_->first < block_writes_->count))
     {
         logtrace(this, fmt::format("got completed block {:d} ({:d}:{:d}->{:d})", block, piece, offset, len));
         return { ReadState::Err, len };
@@ -1850,10 +1865,9 @@ ReadResult tr_peerMsgsImpl::read_piece_data(MessageReader& payload)
 
     if (loc.block_offset == 0U && len == block_size) // simple case: one message has entire block
     {
-        auto buf = std::array<uint8_t, tr_block_info::BlockSize>{};
-        auto const content = std::span{ buf }.first(block_size);
-        payload.to_buf(content);
+        auto const content = std::span{ reinterpret_cast<uint8_t const*>(payload.data()), block_size };
         auto const ok = client_got_block(content, block) == 0;
+        payload.drain(block_size);
         return { ok ? ReadState::Now : ReadState::Err, len };
     }
 
@@ -1868,7 +1882,8 @@ ReadResult tr_peerMsgsImpl::read_piece_data(MessageReader& payload)
 
     if (!incoming_block.has_all())
     {
-        return { ReadState::Later, len }; // we don't have the full block yet
+        // This message is complete; another fragment may already be buffered.
+        return { ReadState::Now, len };
     }
 
     auto block_buf = std::move(incoming_block.buf);
@@ -1890,16 +1905,93 @@ tr_error_code_t tr_peerMsgsImpl::client_got_block(std::span<uint8_t const> block
 
     logtrace(this, fmt::format("got block {:d}", block));
 
-    // NB: if writeBlock() fails the torrent may be paused.
-    // If this happens, `this` will be destructed and must no longer be used.
-    if (auto const err = tr_ioWrite(tor_, session->openFiles(), tor_.block_loc(block), block_data); err != 0)
+    if (session->settings().auto_disk_profile_enabled)
     {
-        return err;
+        return session->disk_cache().add(
+            tor_,
+            block,
+            block_data,
+            shared_from_this(),
+            [](void* owner, tr_torrent& torrent, tr_block_index_t written_block)
+            {
+                auto* self = static_cast<tr_peerMsgsImpl*>(owner);
+                self->active_requests.unset(written_block);
+                self->publish(tr_peer_event::GotBlock(torrent.block_info(), written_block));
+            });
     }
 
-    active_requests.unset(block);
-    publish(tr_peer_event::GotBlock(tor_.block_info(), block));
+    // Runtime auto-mode changes must drain older cached data first.
+    if (auto const err = session->disk_cache().flush(tor_.id()); err != 0)
+        return err;
+    if (tor_.has_block(block))
+        return 0;
+    auto& batch = *block_writes_;
+    batch.prepare_storage();
+    auto const is_adjacent = block == batch.first + batch.count || (batch.first != 0U && block == batch.first - 1U);
+    if (batch.count != 0U && (!is_adjacent || batch.size + n_actual > batch.data.size()))
+    {
+        if (auto const err = flush_block_writes(); err != 0)
+        {
+            return err;
+        }
+    }
+    if (batch.count == 0U)
+    {
+        batch.first = block;
+    }
+    if (block < batch.first)
+    {
+        // Keep the batch in file order even when adjacent blocks arrive backwards.
+        std::move_backward(batch.data.begin(), batch.data.begin() + batch.size, batch.data.begin() + batch.size + n_actual);
+        std::copy(block_data.begin(), block_data.end(), batch.data.begin());
+        batch.first = block;
+    }
+    else
+    {
+        std::copy(block_data.begin(), block_data.end(), batch.data.begin() + batch.size);
+    }
+    batch.size += n_actual;
+    ++batch.count;
+    return 0;
+}
 
+tr_error_code_t tr_peerMsgsImpl::flush_block_writes()
+{
+    if (session->settings().auto_disk_profile_enabled)
+    {
+        if (auto const error = session->disk_cache().flush_ready(tor_.id()); error != 0)
+            return error;
+    }
+    auto& batch = *block_writes_;
+    if (batch.count == 0U)
+    {
+        return 0;
+    }
+    auto const auto_disk = session->settings().auto_disk_profile_enabled;
+    auto const started = auto_disk ? tr_disk_latency::Clock::now() : tr_disk_latency::Clock::time_point{};
+    if (auto const err = tr_ioWrite(
+            tor_,
+            session->openFiles(),
+            tor_.block_loc(batch.first),
+            std::span{ batch.data }.first(batch.size));
+        err != 0)
+    {
+        batch.size = batch.count = 0U;
+        return err;
+    }
+    if (auto_disk)
+    {
+        auto const ended = tr_disk_latency::Clock::now();
+        tor_.record_disk_write(ended - started, ended);
+    }
+    auto const first = batch.first;
+    auto const count = batch.count;
+    batch.size = batch.count = 0U;
+    for (auto block = first; block < first + count; ++block)
+    {
+        active_requests.unset(block);
+        publish(tr_peer_event::GotBlock(tor_.block_info(), block));
+    }
     return 0;
 }
 
@@ -1968,11 +2060,44 @@ ReadResult tr_peerMsgsImpl::can_read_impl(tr_peerIo* io)
         current_message_type = message_type;
     }
 
+    // Check on every read: disconnecting the peer is deferred, so more input
+    // can arrive after an error, with the message ID already stored.
+    if (!is_message_length_correct(tor_, *current_message_type, *current_message_len))
+    {
+        tr_security_log(tr_security_event::PeerMessage,
+            fmt::format("event=p2p_message_rejected peer={} type={} length={}",
+                io->socket_address().display_name(), *current_message_type, *current_message_len));
+        publish(tr_peer_event::GotError(EMSGSIZE));
+        return { ReadState::Err, {} };
+    }
+
     // read <payload>
+    if (*current_message_type != BtPeerMsgs::Piece && flush_block_writes() != 0)
+    {
+        return { ReadState::Err, {} };
+    }
     auto& current_payload = incoming_.payload;
     auto const full_payload_len = *current_message_len - sizeof(*current_message_type);
+    if (*current_message_type == BtPeerMsgs::Piece && current_payload.empty())
+    {
+        if (auto const bytes = io->read_plaintext_view(full_payload_len); bytes)
+        {
+            auto payload = tr::BufferView<std::byte>{ *bytes };
+            auto const ret = process_peer_message(*current_message_type, payload);
+            current_message_len.reset();
+            current_message_type.reset();
+            return ret;
+        }
+    }
     auto n_left = full_payload_len - std::size(current_payload);
-    auto const [buf, n_this_pass] = current_payload.reserve_space(std::min(n_left, io->read_buffer_size()));
+    auto const n_this_pass = std::min(n_left, io->read_buffer_size());
+    // Reserve a complete ordinary message on its first bytes to avoid repeated
+    // allocations when a block arrives in small network fragments.
+    auto const reserve_size = n_this_pass != 0U && current_payload.empty() &&
+            full_payload_len <= tr_block_info::BlockSize + 8U ?
+        full_payload_len :
+        n_this_pass;
+    auto* const buf = current_payload.reserve_space(reserve_size).first;
     io->read_bytes(buf, n_this_pass);
     current_payload.commit_space(n_this_pass);
     n_left -= n_this_pass;
@@ -2000,6 +2125,15 @@ ReadState tr_peerMsgsImpl::can_read(tr_peerIo* io, void* vmsgs, size_t* piece)
 {
     auto* const msgs = static_cast<tr_peerMsgsImpl*>(vmsgs);
 
+    // One bounded batch per read callback; never leave uncommitted payload in
+    // a peer object. Keep the peer alive if a write error pauses the torrent.
+    auto const keep_alive = msgs->shared_from_this();
+    BlockWrites batch{ msgs->session->settings().auto_disk_profile_enabled ?
+                           msgs->tor_.disk_profile().write_batch_size() :
+                           msgs->session->settings().disk_write_batch_size() };
+    TR_ASSERT(msgs->block_writes_ == nullptr);
+    msgs->block_writes_ = &batch;
+
     auto ret = ReadState::Now;
     *piece = 0U;
     while (ret == ReadState::Now)
@@ -2007,6 +2141,13 @@ ReadState tr_peerMsgsImpl::can_read(tr_peerIo* io, void* vmsgs, size_t* piece)
         auto const [read_state, n_piece_bytes_read] = msgs->can_read_impl(io);
         ret = read_state;
         *piece += n_piece_bytes_read;
+    }
+
+    auto const write_error = msgs->flush_block_writes();
+    msgs->block_writes_ = nullptr;
+    if (write_error != 0 || ret == ReadState::Err)
+    {
+        return ReadState::Err;
     }
 
     // If we received piece data, then we might have quota to request new blocks
@@ -2194,11 +2335,18 @@ void tr_peerMsgsImpl::check_request_timeout(time_t const now)
 
     if (ok)
     {
+        auto const automatic = session->settings().auto_disk_profile_enabled;
+        auto const started = automatic ? tr_disk_latency::Clock::now() : tr_disk_latency::Clock::time_point{};
         ok = tr_ioRead(
                  tor_,
                  session->openFiles(),
                  tor_.piece_loc(req.index, req.offset),
                  std::span{ std::data(buf), req.length }) == 0;
+        if (ok && automatic)
+        {
+            auto const ended = tr_disk_latency::Clock::now();
+            tor_.record_disk_read(ended - started, ended);
+        }
     }
 
     if (ok)

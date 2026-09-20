@@ -1,0 +1,25 @@
+[Unit]
+Description=Transmission RPC TLS endpoint
+After=network.target transmission-auto-vpn.service
+
+[Service]
+Type=simple
+ExecStartPre=/usr/sbin/nginx -t -c /etc/transmission-rpc-tls/nginx.conf
+ExecStart=/usr/sbin/nginx -c /etc/transmission-rpc-tls/nginx.conf -g "daemon off;"
+ExecReload=/bin/kill -HUP $MAINPID
+KillSignal=SIGQUIT
+TimeoutStopSec=10
+Restart=on-failure
+RestartSec=5
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+NoNewPrivileges=true
+UMask=0077
+StandardError=journal
+SyslogIdentifier=transmission-rpc-tls
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=50
+
+[Install]
+WantedBy=multi-user.target

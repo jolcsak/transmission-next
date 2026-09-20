@@ -1,0 +1,13 @@
+{
+  "provider": "purevpn",
+  "openvpn_config": "/etc/transmission-vpn/purevpn/server.ovpn",
+  "credentials_file": "/etc/transmission-vpn/purevpn/credentials.txt",
+  "run_user": "transmission-vpn",
+  "daemon": "/opt/transmission/bin/transmission-daemon",
+  "config_dir": "/var/lib/transmission-vpn/config",
+  "download_dir": "/var/lib/transmission-vpn/downloads",
+  "dns": ["1.1.1.1", "1.0.0.1"],
+  "rpc_port": 9091,
+  "subnet": "10.203.74.0/30",
+  "start_timeout": 90
+}

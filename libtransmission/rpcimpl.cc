@@ -8,10 +8,13 @@
 #include <cerrno>
 #include <cstdint>
 #include <ctime>
+#include <cstdlib>
+#include <fstream>
 #include <filesystem>
 #include <functional>
 #include <iterator>
 #include <memory>
+#include <map>
 #include <numeric>
 #include <ranges>
 #include <set>
@@ -29,6 +32,7 @@
 #include "libtransmission/transmission.h"
 
 #include "libtransmission/announcer.h"
+#include "libtransmission/dashboard-load.h"
 #include "libtransmission/crypto-utils.h"
 #include "libtransmission/error.h"
 #include "libtransmission/file-utils.h"
@@ -49,6 +53,7 @@
 #include "libtransmission/utils.h"
 #include "libtransmission/values.h"
 #include "libtransmission/variant.h"
+#include "libtransmission/vpn-traffic.h"
 #include "libtransmission/version.h"
 #include "libtransmission/web-utils.h"
 #include "libtransmission/web.h"
@@ -798,6 +803,63 @@ namespace make_torrent_field_helpers
     }
 }
 
+// Default to computing stats so newly added fields remain safe.
+[[nodiscard]] bool torrent_field_needs_stats(tr_quark const key)
+{
+    switch (key)
+    {
+    case TR_KEY_availability:
+    case TR_KEY_bandwidth_priority:
+    case TR_KEY_bytes_completed:
+    case TR_KEY_comment:
+    case TR_KEY_creator:
+    case TR_KEY_date_created:
+    case TR_KEY_download_dir:
+    case TR_KEY_download_limit:
+    case TR_KEY_download_limited:
+    case TR_KEY_file_count:
+    case TR_KEY_file_stats:
+    case TR_KEY_files:
+    case TR_KEY_group:
+    case TR_KEY_hash_string:
+    case TR_KEY_honors_session_limits:
+    case TR_KEY_id:
+    case TR_KEY_is_private:
+    case TR_KEY_labels:
+    case TR_KEY_magnet_link:
+    case TR_KEY_manual_announce_time:
+    case TR_KEY_max_connected_peers:
+    case TR_KEY_name:
+    case TR_KEY_peer_limit:
+    case TR_KEY_peers:
+    case TR_KEY_piece_count:
+    case TR_KEY_piece_size:
+    case TR_KEY_pieces:
+    case TR_KEY_primary_mime_type:
+    case TR_KEY_priorities:
+    case TR_KEY_seed_idle_limit:
+    case TR_KEY_seed_idle_mode:
+    case TR_KEY_seed_ratio_limit:
+    case TR_KEY_seed_ratio_mode:
+    case TR_KEY_sequential_download:
+    case TR_KEY_sequential_download_from_piece:
+    case TR_KEY_source:
+    case TR_KEY_torrent_file:
+    case TR_KEY_total_size:
+    case TR_KEY_tracker_list:
+    case TR_KEY_tracker_stats:
+    case TR_KEY_trackers:
+    case TR_KEY_upload_limit:
+    case TR_KEY_upload_limited:
+    case TR_KEY_wanted:
+    case TR_KEY_webseeds:
+    case TR_KEY_webseeds_ex:
+        return false;
+    default:
+        return true;
+    }
+}
+
 [[nodiscard]] tr_variant make_torrent_field(tr_torrent const& tor, tr_stat const& st, tr_quark key)
 {
     using namespace make_torrent_field_helpers;
@@ -863,7 +925,7 @@ namespace make_torrent_field_helpers
     case TR_KEY_honors_session_limits:
         return tor.uses_session_limits();
     case TR_KEY_id:
-        return st.id;
+        return tor.id();
     case TR_KEY_is_finished:
         return st.finished;
     case TR_KEY_is_private:
@@ -973,9 +1035,13 @@ namespace make_torrent_field_helpers
     }
 }
 
-[[nodiscard]] auto make_torrent_info_map(tr_torrent* const tor, tr_quark const* const fields, size_t const field_count)
+[[nodiscard]] auto make_torrent_info_map(
+    tr_torrent* const tor,
+    tr_quark const* const fields,
+    size_t const field_count,
+    bool const needs_stats)
 {
-    auto const st = tr_torrentStat(tor);
+    auto const st = needs_stats ? tr_torrentStat(tor) : tr_stat{};
     auto info_map = tr_variant::Map{ field_count };
     for (size_t i = 0; i < field_count; ++i)
     {
@@ -984,9 +1050,13 @@ namespace make_torrent_field_helpers
     return tr_variant{ std::move(info_map) };
 }
 
-[[nodiscard]] auto make_torrent_info_vec(tr_torrent* const tor, tr_quark const* const fields, size_t const field_count)
+[[nodiscard]] auto make_torrent_info_vec(
+    tr_torrent* const tor,
+    tr_quark const* const fields,
+    size_t const field_count,
+    bool const needs_stats)
 {
-    auto const st = tr_torrentStat(tor);
+    auto const st = needs_stats ? tr_torrentStat(tor) : tr_stat{};
     auto info_vec = tr_variant::Vector{};
     info_vec.reserve(field_count);
     for (size_t i = 0; i < field_count; ++i)
@@ -1000,10 +1070,11 @@ namespace make_torrent_field_helpers
     tr_torrent* const tor,
     TrFormat const format,
     tr_quark const* const fields,
-    size_t const field_count)
+    size_t const field_count,
+    bool const needs_stats = true)
 {
-    return format == TrFormat::Table ? make_torrent_info_vec(tor, fields, field_count) :
-                                       make_torrent_info_map(tor, fields, field_count);
+    return format == TrFormat::Table ? make_torrent_info_vec(tor, fields, field_count, needs_stats) :
+                                       make_torrent_info_map(tor, fields, field_count, needs_stats);
 }
 
 [[nodiscard]] std::pair<JsonRpc::Error::Code, std::string> torrentGet(
@@ -1064,9 +1135,10 @@ namespace make_torrent_field_helpers
         torrents_vec.emplace_back(std::move(names));
     }
 
+    auto const needs_stats = std::ranges::any_of(keys, torrent_field_needs_stats);
     for (auto* const tor : torrents)
     {
-        torrents_vec.emplace_back(make_torrent_info(tor, format, std::data(keys), std::size(keys)));
+        torrents_vec.emplace_back(make_torrent_info(tor, format, std::data(keys), std::size(keys), needs_stats));
     }
 
     args_out.try_emplace(TR_KEY_torrents, std::move(torrents_vec));
@@ -2003,9 +2075,122 @@ void add_strings_from_var(std::set<std::string_view>& strings, tr_variant const&
 
 // ---
 
+[[nodiscard]] tr_variant dashboardStorage(tr_session* session)
+{
+    auto const automatic = session->settings().auto_disk_profile_enabled;
+    struct Directory
+    {
+        size_t torrents = 0, active = 0;
+        bool measured = false;
+        tr_disk_latency::Level level = tr_disk_latency::Level::Normal;
+    };
+    // Torrent paths remain alive for this synchronous session-thread snapshot.
+    std::map<std::pair<std::string_view, std::string_view>, Directory> directories;
+    bool disk_busy = false, disk_critical = false;
+    for (auto const* tor : session->torrents())
+    {
+        auto const kind = tor->disk_profile().kind;
+        auto const profile = !automatic ? "manual" : kind == tr_disk_profile::Kind::Hdd ? "hdd" :
+            kind == tr_disk_profile::Kind::Ssd ? "ssd" : "unknown";
+        auto& row = directories[{ tor->current_dir().sv(), profile }];
+        ++row.torrents;
+        row.active += tor->is_running();
+        // Manual mode does not use automatic profile/latency decisions.
+        if (automatic && tor->disk_load_measured())
+        {
+            row.measured = true;
+            row.level = std::max(row.level, tor->disk_load_level());
+            disk_busy |= row.level != tr_disk_latency::Level::Normal;
+            disk_critical |= row.level == tr_disk_latency::Level::Critical;
+        }
+    }
+    auto rows = tr_variant::Vector{};
+    rows.reserve(directories.size());
+    for (auto const& [key, directory] : directories)
+    {
+        auto row = tr_variant::Map{ 5U };
+        row.try_emplace(tr_quark_new("path"), key.first);
+        row.try_emplace(tr_quark_new("profile"), key.second);
+        row.try_emplace(tr_quark_new("torrents"), directory.torrents);
+        row.try_emplace(tr_quark_new("active"), directory.active);
+        auto const load = !directory.measured ? "unknown" : directory.level == tr_disk_latency::Level::Critical ?
+            "critical" : directory.level == tr_disk_latency::Level::Busy ? "busy" : "normal";
+        row.try_emplace(tr_quark_new("load"), load);
+        rows.emplace_back(std::move(row));
+    }
+    auto const pressure = [](char const* path, std::string_view category)
+    {
+        std::ifstream input{ path };
+        std::array<char, 1024> buffer{};
+        input.read(buffer.data(), buffer.size());
+        return tr_dashboard_pressure({ buffer.data(), static_cast<size_t>(input.gcount()) }, category);
+    };
+    auto const cpu = pressure("/proc/pressure/cpu", "some");
+    auto const memory = pressure("/proc/pressure/memory", "some");
+    auto const io = pressure("/proc/pressure/io", "full");
+    auto const& cache = session->disk_cache();
+    auto const cache_busy = automatic && cache.congested();
+    auto result = tr_variant::Map{};
+    result.try_emplace(tr_quark_new("automatic"), automatic);
+    result.try_emplace(tr_quark_new("directories"), std::move(rows));
+    result.try_emplace(tr_quark_new("cache_reserved_bytes"), cache.reserved_bytes());
+    result.try_emplace(tr_quark_new("cache_pending_bytes"), cache.pending_bytes());
+    result.try_emplace(tr_quark_new("cache_capacity_bytes"), tr_disk_cache::Capacity);
+    result.try_emplace(tr_quark_new("cache_congested"), cache_busy);
+    result.try_emplace(tr_quark_new("manual_batch_bytes"), session->settings().disk_write_batch_size());
+    result.try_emplace(tr_quark_new("system_state"), tr_dashboard_load_state(cpu, memory, io, cache_busy, disk_busy, disk_critical));
+    if (cpu) result.try_emplace(tr_quark_new("cpu_wait_percent"), *cpu);
+    if (memory) result.try_emplace(tr_quark_new("memory_wait_percent"), *memory);
+    if (io) result.try_emplace(tr_quark_new("io_wait_percent"), *io);
+    return result;
+}
+
+[[nodiscard]] tr_variant dashboardVpnStatus()
+{
+    auto result = tr_variant::Map{};
+    auto const state_key = tr_quark_new("state");
+    auto const* path = std::getenv("TRANSMISSION_VPN_STATUS_FILE");
+    result.try_emplace(state_key, path != nullptr ? "unknown" : "unmanaged");
+    if (path == nullptr)
+        return result;
+    // Never expose an arbitrary controller document or an unbounded file to RPC.
+    auto input = std::ifstream{ path, std::ios::binary };
+    auto buffer = std::array<char, 4097>{};
+    input.read(buffer.data(), buffer.size());
+    auto const size = input.gcount();
+    if (size <= 0 || size > 4096)
+        return result;
+    auto value = tr_variant_serde::json().parse(std::string_view{ buffer.data(), static_cast<size_t>(size) });
+    auto const* map = value ? value->get_if<tr_variant::Map>() : nullptr;
+    if (map == nullptr)
+        return result;
+    auto const state = map->value_if<std::string_view>(state_key).value_or("unknown");
+    for (auto const allowed : { "starting"sv, "connecting"sv, "connected"sv, "reconnecting"sv, "failed"sv, "stopped"sv })
+        if (state == allowed)
+            result.insert_or_assign(state_key, std::string{ state });
+    for (auto const key : { "provider"sv, "protocol"sv, "kill_switch"sv, "server_hostname"sv, "server_endpoint"sv, "tunnel_ipv4"sv })
+        if (auto const text = map->value_if<std::string_view>(tr_quark_new(key)); text && text->size() <= 255)
+            result.try_emplace(tr_quark_new(key), std::string{ *text });
+    if (auto const port = map->value_if<int64_t>(tr_quark_new("server_port")); port && *port >= 1 && *port <= 65535)
+        result.try_emplace(tr_quark_new("server_port"), *port);
+    if (auto const changed = map->value_if<int64_t>(tr_quark_new("time")); changed && *changed > 0)
+        result.try_emplace(tr_quark_new("changed_at"), *changed);
+    auto traffic_input = std::ifstream{ "/proc/net/dev" };
+    if (auto const traffic = tr_read_vpn_traffic(traffic_input))
+    {
+        result.try_emplace(tr_quark_new("received_bytes"), traffic->received_bytes);
+        result.try_emplace(tr_quark_new("sent_bytes"), traffic->sent_bytes);
+        result.try_emplace(tr_quark_new("received_packets"), traffic->received_packets);
+        result.try_emplace(tr_quark_new("sent_packets"), traffic->sent_packets);
+        result.try_emplace(tr_quark_new("traffic_scope"), "current_tunnel");
+        result.try_emplace(tr_quark_new("traffic_sampled_at"), static_cast<int64_t>(tr_time()));
+    }
+    return result;
+}
+
 [[nodiscard]] std::pair<JsonRpc::Error::Code, std::string> sessionStats(
     tr_session* session,
-    tr_variant::Map const& /*args_in*/,
+    tr_variant::Map const& args_in,
     tr_variant::Map& args_out)
 {
     auto const make_stats_map = [](auto const& stats)
@@ -2034,8 +2219,181 @@ void add_strings_from_var(std::set<std::string_view>& strings, tr_variant const&
     args_out.try_emplace(TR_KEY_paused_torrent_count, total - n_running);
     args_out.try_emplace(TR_KEY_torrent_count, total);
     args_out.try_emplace(TR_KEY_upload_speed, session->piece_speed(tr_direction::Up).base_quantity());
+    if (args_in.value_if<bool>(tr_quark_new("include_history")).value_or(false))
+    {
+        args_out.try_emplace(tr_quark_new("transfer_history"), session->stats().history());
+        args_out.try_emplace(tr_quark_new("vpn_status"), dashboardVpnStatus());
+        args_out.try_emplace(tr_quark_new("storage_status"), dashboardStorage(session));
+    }
 
     return { JsonRpc::Error::SUCCESS, std::string{} };
+}
+
+[[nodiscard]] std::pair<JsonRpc::Error::Code, std::string> telemetryGet(
+    tr_session* session, tr_variant::Map const& args_in, tr_variant::Map& args_out)
+{
+    auto const basic = tr_variant::Map{};
+    auto const result = sessionStats(session, basic, args_out);
+    args_out.try_emplace(tr_quark_new("schema_version"), 1);
+    args_out.try_emplace(tr_quark_new("sampled_at"), static_cast<int64_t>(tr_time()));
+    args_out.try_emplace(tr_quark_new("vpn_status"), dashboardVpnStatus());
+    args_out.try_emplace(tr_quark_new("storage_status"), dashboardStorage(session));
+    if (args_in.value_if<bool>(tr_quark_new("include_history")).value_or(false))
+    {
+        args_out.try_emplace(tr_quark_new("transfer_history"), session->stats().history());
+    }
+    return result;
+}
+
+[[nodiscard]] std::string makeServerId()
+{
+    auto bytes = std::array<std::uint8_t, 16U>{};
+    tr_rand_buffer(bytes.data(), std::size(bytes));
+    // RFC 4122 variant and version 4 make the value easy for clients and
+    // operators to recognize while retaining 122 bits of random entropy.
+    bytes[6] = static_cast<std::uint8_t>((bytes[6] & 0x0fU) | 0x40U);
+    bytes[8] = static_cast<std::uint8_t>((bytes[8] & 0x3fU) | 0x80U);
+    auto const hex = "0123456789abcdef"sv;
+    auto id = std::string{};
+    id.reserve(36U);
+    for (size_t i = 0; i < std::size(bytes); ++i)
+    {
+        if (i == 4U || i == 6U || i == 8U || i == 10U)
+        {
+            id += '-';
+        }
+        id += hex[bytes[i] >> 4U];
+        id += hex[bytes[i] & 0x0fU];
+    }
+    return id;
+}
+
+[[nodiscard]] std::string const& serverId(tr_session const* session)
+{
+    static auto ids = std::map<std::string, std::string>{};
+    auto const& config_dir = session->configDir();
+    if (auto const iter = ids.find(config_dir); iter != std::end(ids))
+    {
+        return iter->second;
+    }
+
+    auto const filename = config_dir + "/server-identity.json"s;
+    auto id = std::string{};
+    if (auto document = tr_variant_serde::json().parse_file(filename))
+    {
+        if (auto const* map = document->get_if<tr_variant::Map>(); map != nullptr)
+        {
+            if (auto const value = map->value_if<std::string_view>(tr_quark_new("server_id")); value && value->size() == 36U)
+            {
+                id = *value;
+            }
+        }
+    }
+
+    if (std::empty(id))
+    {
+        id = makeServerId();
+        auto document = tr_variant::Map{};
+        document.try_emplace(tr_quark_new("schema_version"), 1);
+        document.try_emplace(tr_quark_new("server_id"), id);
+        auto const data = tr_variant_serde::json().to_string(tr_variant{ std::move(document) });
+        auto temporary = filename + "-XXXXXX"s;
+        auto const fd = tr_sys_file_open_temp(temporary.data());
+        auto saved = false;
+        if (fd != TR_BAD_SYS_FILE)
+        {
+            uint64_t written = 0;
+            auto const ok = tr_sys_file_write(fd, data.data(), data.size(), &written) && written == data.size();
+            auto const closed = tr_sys_file_close(fd);
+            saved = ok && closed && tr_sys_path_rename(temporary, filename);
+        }
+        if (!saved)
+        {
+            tr_sys_path_remove(temporary);
+            tr_logAddWarn("Could not persist server identity; it will change after restart");
+        }
+    }
+
+    return ids.emplace(config_dir, std::move(id)).first->second;
+}
+
+[[nodiscard]] tr_variant::Vector serverCapabilities()
+{
+    auto capabilities = tr_variant::Vector{};
+    for (auto const feature : { "server-capabilities.v1"sv, "dashboard.statistics.v1"sv, "dashboard.storage-profiles.v1"sv,
+             "logs.merged.v1"sv, "rpc.security.v1"sv, "telemetry.mqtt-influx.v1"sv, "vpn.management.v1"sv, "vpn.traffic.v1"sv })
+    {
+        capabilities.emplace_back(tr_variant::unmanaged_string(feature));
+    }
+    return capabilities;
+}
+
+[[nodiscard]] tr_variant telemetryDocument(std::string const& path)
+{
+    auto input = std::ifstream{ path, std::ios::binary };
+    auto buffer = std::array<char, 65537>{};
+    input.read(buffer.data(), buffer.size());
+    auto const count = input.gcount();
+    if (count <= 0 || count > 65536)
+    {
+        return tr_variant::Map{};
+    }
+    auto parsed = tr_variant_serde::json().parse(std::string_view{ buffer.data(), static_cast<size_t>(count) });
+    return parsed && parsed->get_if<tr_variant::Map>() != nullptr ? std::move(*parsed) : tr_variant{ tr_variant::Map{} };
+}
+
+[[nodiscard]] std::pair<JsonRpc::Error::Code, std::string> telemetryConfig(
+    tr_session* session, tr_variant::Map const& args, tr_variant::Map& out, bool write)
+{
+    auto const base = session->configDir() + "/telemetry"s;
+    if (!write)
+    {
+        out.try_emplace(tr_quark_new("configuration"), telemetryDocument(base + ".json"));
+        out.try_emplace(tr_quark_new("vpn_configuration"), telemetryDocument(session->configDir() + "/vpn.json"));
+        out.try_emplace(tr_quark_new("vpn_file"), session->configDir() + "/vpn.json");
+        out.try_emplace(tr_quark_new("vpn_defaults"), telemetryDocument(session->configDir() + "/vpn-defaults.json"));
+        out.try_emplace(tr_quark_new("job"), telemetryDocument(base + "-result.json"));
+        out.try_emplace(tr_quark_new("file"), base + ".json");
+        return { JsonRpc::Error::SUCCESS, {} };
+    }
+    auto const text = args.value_if<std::string_view>(tr_quark_new("configuration"));
+    auto const id = args.value_if<std::string_view>(tr_quark_new("job_id"));
+    auto const action = args.value_if<std::string_view>(tr_quark_new("action"));
+    auto const target_type = args.value_if<std::string_view>(tr_quark_new("target")).value_or("telemetry"sv);
+    auto parsed = text && text->size() <= 60000 ? tr_variant_serde::json().parse(*text) : std::nullopt;
+    if (!parsed || !parsed->get_if<tr_variant::Map>() || !id || id->empty() || id->size() > 64 ||
+        (action != "save"sv && action != "test"sv && !(action == "connect_test"sv && target_type == "vpn"sv)) ||
+        (target_type != "telemetry"sv && target_type != "vpn"sv))
+    {
+        return { JsonRpc::Error::INVALID_PARAMS, "Invalid telemetry configuration request" };
+    }
+    auto const target = base + "-request.json";
+    if (tr_sys_path_exists(target))
+    {
+        return { JsonRpc::Error::INVALID_PARAMS, "A telemetry request is already pending" };
+    }
+    auto document = tr_variant::Map{};
+    document.try_emplace(tr_quark_new("configuration"), std::move(*parsed));
+    document.try_emplace(tr_quark_new("job_id"), *id);
+    document.try_emplace(tr_quark_new("action"), *action);
+    document.try_emplace(tr_quark_new("target"), target_type);
+    auto const data = tr_variant_serde::json().to_string(tr_variant{ std::move(document) });
+    auto temporary = base + "-XXXXXX";
+    auto const fd = tr_sys_file_open_temp(temporary.data());
+    if (fd == TR_BAD_SYS_FILE)
+    {
+        return { JsonRpc::Error::INTERNAL_ERROR, "Cannot create telemetry request" };
+    }
+    uint64_t written = 0;
+    auto const ok = tr_sys_file_write(fd, data.data(), data.size(), &written) && written == data.size();
+    auto const closed = tr_sys_file_close(fd);
+    if (!ok || !closed || !tr_sys_path_rename(temporary, target))
+    {
+        tr_sys_path_remove(temporary);
+        return { JsonRpc::Error::INTERNAL_ERROR, "Cannot save telemetry request" };
+    }
+    out.try_emplace(tr_quark_new("job_id"), *id);
+    return { JsonRpc::Error::SUCCESS, {} };
 }
 
 [[nodiscard]] auto values_get_units()
@@ -2076,7 +2434,7 @@ using SessionAccessors = std::pair<SessionGetter, SessionSetter>;
 
 [[nodiscard]] auto& session_accessors()
 {
-    static auto map = small::max_size_map<tr_quark, SessionAccessors, 64U>{};
+    static auto map = small::max_size_map<tr_quark, SessionAccessors, 80U>{};
 
     if (!std::empty(map))
     {
@@ -2645,6 +3003,21 @@ using SessionAccessors = std::pair<SessionGetter, SessionSetter>;
         [](tr_session const& /*src*/) -> tr_variant { return tr_variant::unmanaged_string(LONG_VERSION_STRING); },
         nullptr);
 
+    map.try_emplace(
+        tr_quark_new("server_capabilities"),
+        [](tr_session const& /*src*/) -> tr_variant { return serverCapabilities(); },
+        nullptr);
+
+    map.try_emplace(
+        tr_quark_new("server_id"),
+        [](tr_session const& src) -> tr_variant { return serverId(&src); },
+        nullptr);
+
+    map.try_emplace(
+        tr_quark_new("server_capabilities_schema_version"),
+        [](tr_session const& /*src*/) -> tr_variant { return 1; },
+        nullptr);
+
     // `row` could have been replaced by structured bindings,
     // but it's not available until clang 16
     // https://github.com/llvm/llvm-project/commit/44f2baa3804a62ca793f0ff3e43aa71cea91a795
@@ -2917,6 +3290,126 @@ void tr_rpc_request_exec_impl(tr_session* session, tr_variant& request, tr_rpc_r
     }
 
     auto const is_notification = is_jsonrpc && !data->id.has_value();
+
+    if (method_name == "log_get"sv)
+    {
+        auto rows = tr_variant::Vector{};
+        if (!is_notification)
+        {
+            for (auto const& entry : tr_logGetHistory())
+            {
+                auto row = tr_variant::Map{};
+                row.try_emplace(tr_quark_new("time_ms"), std::chrono::duration_cast<std::chrono::milliseconds>(entry.when.time_since_epoch()).count());
+                row.try_emplace(tr_quark_new("level"), static_cast<int64_t>(entry.level));
+                row.try_emplace(tr_quark_new("source"), entry.name);
+                row.try_emplace(tr_quark_new("message"), entry.message);
+                rows.emplace_back(std::move(row));
+            }
+            data->args_out.try_emplace(tr_quark_new("entries"), std::move(rows));
+            data->args_out.try_emplace(tr_quark_new("vpn_entries"), telemetryDocument(session->configDir() + "/vpn-log.json"));
+            data->args_out.try_emplace(tr_quark_new("capacity"), 512);
+            data->args_out.try_emplace(tr_quark_new("scope"), "current_process");
+        }
+        tr_rpc_idle_done(data, Error::SUCCESS, {});
+        return;
+    }
+
+    if (method_name == "rpc_security_get"sv)
+    {
+        if (is_notification)
+        {
+            tr_rpc_idle_done(data, Error::INVALID_REQUEST, "RPC security status requires a request id");
+            return;
+        }
+
+        // Deliberately expose only the account name and whether authentication is
+        // enabled. The stored password is a salted verifier and must not escape
+        // the daemon through this administration API.
+        data->args_out.try_emplace(tr_quark_new("enabled"), tr_sessionIsRPCPasswordEnabled(session));
+        data->args_out.try_emplace(tr_quark_new("username"), tr_sessionGetRPCUsername(session));
+        tr_rpc_idle_done(data, Error::SUCCESS, {});
+        return;
+    }
+
+    if (method_name == "server_capabilities_get"sv)
+    {
+        if (is_notification)
+        {
+            tr_rpc_idle_done(data, Error::INVALID_REQUEST, "Server capabilities require a request id");
+            return;
+        }
+        data->args_out.try_emplace(tr_quark_new("schema_version"), 1);
+        data->args_out.try_emplace(tr_quark_new("server_id"), serverId(session));
+        data->args_out.try_emplace(tr_quark_new("features"), serverCapabilities());
+        data->args_out.try_emplace(tr_quark_new("version"), tr_variant::unmanaged_string(LONG_VERSION_STRING));
+        tr_rpc_idle_done(data, Error::SUCCESS, {});
+        return;
+    }
+
+    if (method_name == "rpc_security_set"sv)
+    {
+        if (is_notification)
+        {
+            tr_rpc_idle_done(data, Error::INVALID_REQUEST, "RPC security changes require a request id");
+            return;
+        }
+
+        auto const username = params->value_if<std::string_view>(tr_quark_new("username"));
+        auto const password = params->value_if<std::string_view>(tr_quark_new("password"));
+        auto const has_control_character = [](std::string_view value)
+        {
+            return std::ranges::any_of(value, [](unsigned char ch) { return ch < 0x20U || ch == 0x7fU; });
+        };
+
+        if (!username || std::empty(*username) || std::size(*username) > 64U || has_control_character(*username))
+        {
+            tr_rpc_idle_done(data, Error::INVALID_PARAMS, "username must be 1 to 64 printable characters");
+            return;
+        }
+
+        if (!password || std::size(*password) < 8U || std::size(*password) > 4096U || has_control_character(*password))
+        {
+            tr_rpc_idle_done(data, Error::INVALID_PARAMS, "password must be 8 to 4096 printable characters");
+            return;
+        }
+
+        tr_sessionSetRPCUsername(session, *username);
+        tr_sessionSetRPCPassword(session, *password);
+        tr_sessionSetRPCPasswordEnabled(session, true);
+        tr_sessionSaveSettings(session, session->configDir(), tr_variant::Map{});
+        session->rpcNotify(TR_RPC_SESSION_CHANGED);
+
+        data->args_out.try_emplace(tr_quark_new("enabled"), true);
+        data->args_out.try_emplace(tr_quark_new("username"), *username);
+        tr_rpc_idle_done(data, Error::SUCCESS, {});
+        return;
+    }
+
+    if (method_name == "telemetry_config_get"sv || method_name == "telemetry_config_apply"sv)
+    {
+        if (is_notification)
+        {
+            tr_rpc_idle_done(data, Error::INVALID_REQUEST, "Telemetry administration requires a request id");
+            return;
+        }
+        auto const [err, errmsg] = telemetryConfig(session, *params, data->args_out, method_name == "telemetry_config_apply"sv);
+        tr_rpc_idle_done(data, err, errmsg);
+        return;
+    }
+
+    if (method_name == "telemetry_get"sv)
+    {
+        if (!is_notification)
+        {
+            auto const [err, errmsg] = telemetryGet(session, *params, data->args_out);
+            tr_rpc_idle_done(data, err, errmsg);
+        }
+        else
+        {
+            tr_rpc_idle_done(data, Error::SUCCESS, {});
+        }
+        return;
+    }
 
     if (auto const handler = async_handlers.find(method_key); handler != std::end(async_handlers))
     {

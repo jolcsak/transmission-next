@@ -821,6 +821,7 @@ void tr_daemon::stop()
 
 int tr_daemon::start([[maybe_unused]] bool foreground)
 {
+    tr_logSetHistoryEnabled(true);
     sd_notifyf(0, "MAINPID=%d\n", (int)getpid());
 
     /* setup event state */

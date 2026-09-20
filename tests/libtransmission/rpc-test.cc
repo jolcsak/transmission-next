@@ -16,6 +16,7 @@
 #include <gtest/gtest.h>
 
 #include <libtransmission/quark.h>
+#include <libtransmission/log.h>
 #include <libtransmission/transmission.h>
 #include <libtransmission/rpcimpl.h>
 #include <libtransmission/variant.h>
@@ -30,6 +31,38 @@ namespace tr::test
 {
 
 using RpcTest = SessionTest;
+
+TEST_F(RpcTest, BoundedLogHistory)
+{
+    struct Restore
+    {
+        tr_log_level level = tr_logGetLevel();
+        ~Restore()
+        {
+            tr_logSetHistoryEnabled(false);
+            tr_logSetLevel(level);
+        }
+    } restore;
+    tr_logSetHistoryEnabled(false);
+    tr_logSetHistoryEnabled(true);
+    tr_logSetLevel(TR_LOG_INFO);
+    for (int i = 0; i < 600; ++i)
+    {
+        tr_logAddMessage(__FILE__, __LINE__, TR_LOG_INFO, std::to_string(i), "fixture");
+    }
+    auto entries = tr_logGetHistory();
+    ASSERT_EQ(entries.size(), 512U);
+    EXPECT_EQ(entries.front().message, "88");
+    EXPECT_EQ(entries.back().message, "599");
+    EXPECT_GE(tr_logGetQueue().size(), 600U);
+    EXPECT_EQ(tr_logGetHistory().size(), 512U);
+    tr_logAddMessage(__FILE__, __LINE__, TR_LOG_INFO, std::string(1023, 'x') + "€tail", std::string(300, 's'));
+    auto const last = tr_logGetHistory().back();
+    EXPECT_EQ(last.message, std::string(1023, 'x') + "…");
+    EXPECT_EQ(last.name.size(), 131U);
+    tr_logSetHistoryEnabled(false);
+    EXPECT_TRUE(tr_logGetHistory().empty());
+}
 
 namespace
 {

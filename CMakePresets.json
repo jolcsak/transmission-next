@@ -1,0 +1,41 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "lean",
+      "displayName": "Daemon and RPC",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/lean",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "ENABLE_DAEMON": "ON",
+        "ENABLE_GTK": "OFF",
+        "ENABLE_QT": "OFF",
+        "ENABLE_MAC": "OFF",
+        "ENABLE_CLI": "OFF",
+        "ENABLE_UTILS": "OFF",
+        "ENABLE_TESTS": "OFF",
+        "ENABLE_NLS": "OFF",
+        "ENABLE_UTP": "ON",
+        "INSTALL_DOC": "OFF",
+        "INSTALL_LIB": "OFF",
+        "INSTALL_WEB": "OFF",
+        "REBUILD_WEB": "OFF",
+        "RUN_CLANG_TIDY": "OFF",
+        "USE_SYSTEM_FMT": "OFF"
+      }
+    },
+    {
+      "name": "lean-web",
+      "displayName": "Daemon, RPC and web interface",
+      "inherits": "lean",
+      "binaryDir": "${sourceDir}/build/lean-web",
+      "cacheVariables": { "INSTALL_WEB": "ON" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "lean", "configurePreset": "lean" },
+    { "name": "lean-web", "configurePreset": "lean-web" }
+  ]
+}

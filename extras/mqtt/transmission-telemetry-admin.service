@@ -1,0 +1,22 @@
+[Unit]
+Description=Transmission telemetry configuration and export supervisor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/transmission-telemetry.env
+User=transmission-vpn
+Group=transmission-vpn
+ExecStart=/opt/transmission/mqtt/venv/bin/python /opt/transmission/mqtt/admin.py --config-dir /var/lib/transmission-vpn/config
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/transmission-vpn/config
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

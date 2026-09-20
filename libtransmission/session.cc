@@ -13,6 +13,7 @@
 #include <future>
 #include <iterator> // for std::back_inserter
 #include <limits> // std::numeric_limits
+#include <map>
 #include <memory>
 #include <optional>
 #include <ranges>
@@ -709,6 +710,83 @@ void tr_session::on_queue_timer()
 {
     using namespace queue_helpers;
 
+    if (settings().auto_disk_profile_enabled)
+    {
+        struct Load
+        {
+            size_t down = 0U;
+            size_t up = 0U;
+            bool pressured = false;
+            bool critical = false;
+        };
+        auto loads = std::map<std::string, Load>{};
+        auto add_running = [&loads](tr_torrent const& tor)
+        {
+            for (auto const& device : tor.disk_profile().devices)
+            {
+                auto& load = loads[device];
+                ++(tor.queue_direction() == tr_direction::Down ? load.down : load.up);
+                load.pressured = load.pressured || tor.disk_pressured();
+                load.critical = load.critical || tor.disk_critical();
+            }
+        };
+        for (auto* tor : torrents())
+        {
+            tor->refresh_disk_profile();
+            if (tor->is_running())
+            {
+                add_running(*tor);
+            }
+        }
+        for (auto const dir : { tr_direction::Up, tr_direction::Down })
+        {
+            auto global_slots = count_queue_free_slots(dir);
+            auto candidates = get_next_queued_torrents(torrents(), dir, std::numeric_limits<size_t>::max());
+            std::ranges::sort(candidates, tr_torrent::CompareQueuePosition);
+            for (auto* tor : candidates)
+            {
+                if (global_slots == 0U)
+                {
+                    break;
+                }
+                // One load table per timer pulse, not a full torrent scan for
+                // every queued candidate on the same disk.
+                auto const downloading = dir == tr_direction::Down;
+                auto const blocked = std::ranges::any_of(
+                    tor->disk_profile().devices,
+                    [&](auto const& device)
+                    {
+                        auto const& load = loads[device];
+                        if (load.critical || tor->disk_critical())
+                            return true;
+                        auto limit = downloading ? disk_cache().download_limit(tor->disk_profile()) :
+                                                   tor->disk_profile().queue_limit(false);
+                        if (load.pressured || tor->disk_pressured())
+                        {
+                            limit = std::min(limit, size_t{ downloading ? 1U : 2U });
+                        }
+                        return (downloading ? load.down : load.up) >= limit;
+                    });
+                if (blocked)
+                {
+                    continue;
+                }
+                tr_torrentStartNow(tor);
+                if (!tor->is_running())
+                {
+                    continue;
+                }
+                --global_slots;
+                add_running(*tor);
+                if (queue_start_callback_)
+                {
+                    queue_start_callback_(tor->id());
+                }
+            }
+        }
+        return;
+    }
+
     for (auto const dir : { tr_direction::Up, tr_direction::Down })
     {
         if (!queueEnabled(dir))
@@ -728,6 +806,47 @@ void tr_session::on_queue_timer()
             }
         }
     }
+}
+
+size_t tr_session::count_disk_queue_free_slots(tr_torrent const& candidate, tr_direction dir) const noexcept
+{
+    if (!settings().auto_disk_profile_enabled)
+    {
+        return std::numeric_limits<size_t>::max();
+    }
+    if (candidate.disk_critical())
+        return 0U;
+    auto const downloading = dir == tr_direction::Down;
+    auto available = downloading ? disk_cache().download_limit(candidate.disk_profile()) :
+                                   candidate.disk_profile().queue_limit(false);
+    for (auto const& device : candidate.disk_profile().devices)
+    {
+        auto limit = downloading ? disk_cache().download_limit(candidate.disk_profile()) :
+                                   candidate.disk_profile().queue_limit(false);
+        auto active = size_t{};
+        auto pressured = candidate.disk_pressured();
+        for (auto const* tor : torrents())
+        {
+            auto const& devices = tor->disk_profile().devices;
+            if (tor == &candidate || !tor->is_running() || std::ranges::find(devices, device) == devices.end())
+            {
+                continue;
+            }
+            if (tor->disk_critical())
+                return 0U;
+            pressured = pressured || tor->disk_pressured();
+            if (tor->queue_direction() == dir && ++active >= limit)
+            {
+                return 0U;
+            }
+        }
+        if (pressured)
+        {
+            limit = std::min(limit, size_t{ downloading ? 1U : 2U });
+        }
+        available = std::min(available, active >= limit ? 0U : limit - active);
+    }
+    return available;
 }
 
 // Periodically save the .resume files of any torrents whose

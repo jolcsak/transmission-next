@@ -1,0 +1,20 @@
+[Unit]
+Description=Transmission with a managed VPN namespace
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/transmission-vpn/vpn.env
+ExecStart=/usr/bin/python3 /opt/transmission/extras/vpn/controller.py run --config /etc/transmission-vpn/vpn.json
+Restart=on-failure
+RestartSec=30
+# Supervisor stops the RPC proxy, flushes Transmission, then stops OpenVPN.
+KillMode=mixed
+TimeoutStopSec=90
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

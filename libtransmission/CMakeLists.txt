@@ -63,6 +63,10 @@ target_sources(${TR_NAME}
         error.h
         env.cc
         env.h
+        disk-cache.cc
+        disk-cache.h
+        disk-profile.cc
+        disk-profile.h
         file-piece-map.cc
         file-piece-map.h
         file-posix.cc
@@ -101,6 +105,7 @@ target_sources(${TR_NAME}
         peer-mse.h
         peer-msgs.cc
         peer-msgs.h
+        peer-message-limits.h
         peer-socket-tcp.cc
         peer-socket-tcp.h
         peer-socket-utp.cc
@@ -121,6 +126,8 @@ target_sources(${TR_NAME}
         resume.h
         rpc-server.cc
         rpc-server.h
+        rpc-login-limiter.h
+        security-log.h
         rpcimpl.cc
         rpcimpl.h
         serializer.cc

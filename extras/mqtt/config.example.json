@@ -1,0 +1,15 @@
+{
+  "rpc": {"url": "http://127.0.0.1:9091/transmission/rpc"},
+  "interval_seconds": 30,
+  "heartbeat_seconds": 300,
+  "include_history": true,
+  "mqtt": {
+    "host": "mqtt.example.com",
+    "port": 8883,
+    "tls": true,
+    "client_id": "transmission-telemetry",
+    "topic_prefix": "home/transmission",
+    "username": "transmission",
+    "password_file": "/etc/transmission-mqtt/password"
+  }
+}

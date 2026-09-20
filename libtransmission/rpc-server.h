@@ -10,7 +10,9 @@
 #endif
 
 #include <array>
+#include <chrono>
 #include <cstddef> // size_t
+#include <map>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -19,6 +21,7 @@
 #include "libtransmission/constants.h" // TrDefaultHttpServerBasePath
 #include "libtransmission/net.h"
 #include "libtransmission/quark.h"
+#include "libtransmission/rpc-login-limiter.h"
 #include "libtransmission/session-settings.h"
 #include "libtransmission/types.h"
 #include "libtransmission/utils-ev.h"
@@ -150,6 +153,7 @@ public:
     tr::evhelpers::evhttp_unique_ptr httpd;
     tr_session* const session;
 
-    size_t login_attempts_ = 0U;
+    tr_rpc_login_limiter login_limiter_;
+    std::map<std::string, std::chrono::steady_clock::time_point> successful_login_logins_;
     int start_retry_counter = 0;
 };

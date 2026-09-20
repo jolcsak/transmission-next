@@ -1,0 +1,21 @@
+[Unit]
+Description=Transmission MQTT telemetry
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/transmission-telemetry.env
+DynamicUser=yes
+ExecStart=/opt/transmission/mqtt/venv/bin/python /opt/transmission/mqtt/exporter.py --config /etc/transmission-mqtt/config.json
+LoadCredential=mqtt-password:/etc/transmission-mqtt/password
+Restart=on-failure
+RestartSec=30
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

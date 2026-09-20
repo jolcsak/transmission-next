@@ -1,0 +1,17 @@
+[Unit]
+Description=Transmission isolated VPN connection tests
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/python3 /opt/transmission/extras/vpn/probe_service.py --user transmission
+Restart=on-failure
+RestartSec=10
+UMask=0077
+KillMode=control-group
+TimeoutStopSec=35
+
+[Install]
+WantedBy=multi-user.target

@@ -44,6 +44,9 @@ void tr_verify_worker::verify_torrent(
     tr_file_index_t prev_file_index = ~file_index;
     tr_piece_index_t piece = 0U;
     auto buffer = std::vector<std::byte>(1024U * 256U);
+    size_t buffer_begin = 0U;
+    size_t buffer_end = 0U;
+    bool piece_read_ok = true;
     auto sha = tr_sha1{};
     auto last_slept_at = current_time_secs();
 
@@ -51,6 +54,11 @@ void tr_verify_worker::verify_torrent(
     while (!abort_flag && piece < metainfo.piece_count())
     {
         auto const file_length = metainfo.file_size(file_index);
+        if (file_length == 0U)
+        {
+            ++file_index;
+            continue;
+        }
 
         /* if we're starting a new file... */
         if (file_pos == 0U && fd == TR_BAD_SYS_FILE && file_index != prev_file_index)
@@ -69,12 +77,36 @@ void tr_verify_worker::verify_torrent(
         /* read a bit */
         if (fd != TR_BAD_SYS_FILE)
         {
-            auto num_read = uint64_t{};
-            if (tr_sys_file_read_at(fd, std::data(buffer), bytes_this_pass, file_pos, &num_read) && num_read > 0U)
+            // Read across piece boundaries within a file, then hash each piece
+            // from the same bounded buffer without another filesystem call.
+            if (buffer_begin == buffer_end)
             {
-                bytes_this_pass = num_read;
-                sha.add(std::data(buffer), bytes_this_pass);
+                auto num_read = uint64_t{};
+                buffer_begin = buffer_end = 0U;
+                if (tr_sys_file_read_at(
+                        fd,
+                        std::data(buffer),
+                        std::min<uint64_t>(left_in_file, std::size(buffer)),
+                        file_pos,
+                        &num_read))
+                {
+                    buffer_end = static_cast<size_t>(num_read);
+                }
             }
+            if (buffer_begin < buffer_end)
+            {
+                bytes_this_pass = std::min<uint64_t>(bytes_this_pass, buffer_end - buffer_begin);
+                sha.add(std::data(buffer) + buffer_begin, bytes_this_pass);
+                buffer_begin += static_cast<size_t>(bytes_this_pass);
+            }
+            else
+            {
+                piece_read_ok = false;
+            }
+        }
+        else
+        {
+            piece_read_ok = false;
         }
 
         /* move our offsets */
@@ -86,7 +118,8 @@ void tr_verify_worker::verify_torrent(
         /* if we're finishing a piece... */
         if (left_in_piece == 0U)
         {
-            auto const has_piece = sha.finish() == metainfo.piece_hash(piece);
+            auto const hash = sha.finish();
+            auto const has_piece = piece_read_ok && hash == metainfo.piece_hash(piece);
             verify_mediator.on_piece_checked(piece, has_piece);
 
             if (sleep_per_seconds_during_verify > std::chrono::milliseconds::zero())
@@ -103,6 +136,7 @@ void tr_verify_worker::verify_torrent(
             sha.clear();
             ++piece;
             piece_pos = 0U;
+            piece_read_ok = true;
         }
 
         /* if we're finishing a file... */
@@ -116,6 +150,7 @@ void tr_verify_worker::verify_torrent(
 
             ++file_index;
             file_pos = 0U;
+            buffer_begin = buffer_end = 0U;
         }
     }
 

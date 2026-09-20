@@ -185,7 +185,7 @@ public:
             tr::evhelpers::event_new_pri2(
                 session.event_base(),
                 static_cast<evutil_socket_t>(sock_),
-                EV_WRITE,
+                EV_WRITE | EV_PERSIST,
                 event_write_cb,
                 this));
 
@@ -262,6 +262,7 @@ public:
 private:
     size_t try_read_impl(InBuf& buf, size_t n_bytes, tr_error* error) override
     {
+        n_bytes = std::min(n_bytes, read_chunk_size_);
         auto const [bufptr, buflen] = buf.reserve_space(n_bytes);
         n_bytes = std::min(n_bytes, buflen);
         TR_ASSERT(n_bytes > 0U);
@@ -270,6 +271,12 @@ private:
 
         if (n_read > 0)
         {
+            // Small control-only connections stay within the inline buffer.
+            // Grow only when a read fills the current chunk.
+            if (static_cast<size_t>(n_read) == read_chunk_size_)
+            {
+                read_chunk_size_ = 256U * 1024U;
+            }
             buf.commit_space(n_read);
             return static_cast<size_t>(n_read);
         }
@@ -337,11 +344,13 @@ private:
 
         TR_ASSERT(std::cmp_equal(s->sock_, fd));
 
-        s->is_write_enabled_ = false;
+        // Keep polling across partial writes. The peer I/O callback disables
+        // polling when its queue empties, bandwidth runs out, or writing fails.
         s->write_cb();
     }
 
     tr_socket_t sock_;
+    size_t read_chunk_size_ = TrBlockSize;
 
     tr::evhelpers::event_unique_ptr event_read_;
     tr::evhelpers::event_unique_ptr event_write_;

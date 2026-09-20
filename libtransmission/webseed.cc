@@ -393,6 +393,24 @@ void tr_webseed_task::use_fetched_blocks()
                 {
                     if (auto* const torrent = session->torrents().get(tor_id))
                     {
+                        if (torrent->has_block(loc.block))
+                            return;
+                        if (session->settings().auto_disk_profile_enabled)
+                        {
+                            session->disk_cache().add(
+                                *torrent,
+                                loc.block,
+                                buf,
+                                [webseed, torrent, block = loc.block]()
+                                {
+                                    webseed->active_requests.unset(block);
+                                    webseed->publish(tr_peer_event::GotBlock(torrent->block_info(), block));
+                                });
+                            session->disk_cache().flush_ready(tor_id);
+                            return;
+                        }
+                        if (session->disk_cache().flush(tor_id) != 0 || torrent->has_block(loc.block))
+                            return;
                         webseed->active_requests.unset(loc.block);
                         if (tr_ioWrite(*torrent, session->openFiles(), loc, buf) != 0)
                         {

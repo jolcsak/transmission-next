@@ -574,7 +574,7 @@ bool torrentShouldQueue(tr_torrent const* const tor)
 {
     tr_direction const dir = tor->queue_direction();
 
-    return tor->session->count_queue_free_slots(dir) == 0;
+    return tor->session->count_queue_free_slots(dir) == 0 || tor->session->count_disk_queue_free_slots(*tor, dir) == 0;
 }
 
 void freeTorrent(tr_torrent* tor)
@@ -710,6 +710,7 @@ void tr_torrent::stop_now()
 
     session->verify_remove(this);
 
+    session->disk_cache().flush(id());
     stopped_(this);
     session->announcer_->stopTorrent(this);
 
@@ -731,6 +732,15 @@ void tr_torrentRemoveInSessionThread(
 {
     auto const lock = tor->unique_lock();
 
+    // Explicit deletion must not recreate payload after removing it.
+    if (delete_flag)
+    {
+        tor->session->disk_cache().discard(tor->id());
+    }
+    else
+    {
+        tor->session->disk_cache().flush(tor->id());
+    }
     if (delete_flag && tor->has_metainfo())
     {
         // ensure the files are all closed and idle before moving
@@ -878,6 +888,7 @@ void tr_torrent::on_metainfo_completed()
     else
     {
         completion_.set_has_all();
+        interest_revision_.fetch_add(1, std::memory_order_relaxed);
         recheck_completeness();
         date_done_ = date_added_; // Must be after recheck_completeness()
 
@@ -1090,6 +1101,12 @@ void tr_torrent::set_location_in_session_thread(std::string_view const path, boo
 {
     TR_ASSERT(session->am_in_session_thread());
 
+    if (session->disk_cache().flush(id()) != 0)
+    {
+        if (setme_state != nullptr)
+            *setme_state = TR_LOC_ERROR;
+        return;
+    }
     auto ok = true;
     if (move_from_old_path)
     {
@@ -1200,10 +1217,17 @@ void tr_torrentSetDownloadDir(tr_torrent* tor, std::string_view const path)
 {
     tr_return_if_fail(tr_isTorrent(tor));
 
-    if (tor->download_dir_ != path)
-    {
-        tor->set_download_dir(path, true);
-    }
+    // GUI callers can run outside the session thread. Drain old-path writes
+    // there before changing directories or scheduling verification.
+    tor->session->run_in_session_thread(
+        [session = tor->session, id = tor->id(), path = std::string{ path }]()
+        {
+            auto* target = session->torrents().get(id);
+            if (target != nullptr && target->download_dir_ != path && session->disk_cache().flush(id) == 0)
+            {
+                target->set_download_dir(path, true);
+            }
+        });
 }
 
 std::string_view tr_torrentGetDownloadDir(tr_torrent const* tor)
@@ -1585,6 +1609,7 @@ void tr_torrentVerify(tr_torrent* tor)
                 return;
             }
 
+            session->disk_cache().flush(tor->id());
             session->verify_remove(tor);
 
             if (!tor->has_metainfo())
@@ -2228,6 +2253,7 @@ void tr_torrent::on_block_received(tr_block_index_t const block)
     set_dirty();
 
     completion_.add_block(block);
+    interest_revision_.fetch_add(1, std::memory_order_relaxed);
 
     auto const block_loc = this->block_loc(block);
     auto const first_piece = block_loc.piece;
@@ -2276,6 +2302,7 @@ void tr_torrent::set_download_dir(std::string_view path, bool is_new_torrent)
         else
         {
             completion_.set_has_all();
+            interest_revision_.fetch_add(1, std::memory_order_relaxed);
             recheck_completeness();
             date_done_ = date_added_; // Must be after recheck_completeness()
         }
@@ -2308,7 +2335,33 @@ void tr_torrent::refresh_current_dir()
     TR_ASSERT(!std::empty(dir));
     TR_ASSERT(dir == download_dir() || dir == incomplete_dir());
 
+    auto const changed = current_dir_ != dir;
     current_dir_ = dir;
+    refresh_disk_profile(changed);
+}
+
+void tr_torrent::refresh_disk_profile(bool force)
+{
+    if (!session->settings().auto_disk_profile_enabled)
+    {
+        return;
+    }
+    auto const now = tr_disk_latency::Clock::now();
+    if (!force && now < next_disk_probe_)
+    {
+        return;
+    }
+    next_disk_probe_ = now + std::chrono::seconds{ 60 };
+    auto profile = tr_detect_disk_profile(current_dir().sv());
+    if (force || profile.kind != disk_profile_.kind || profile.devices != disk_profile_.devices)
+    {
+        disk_latency_ = {};
+        disk_profile_ = std::move(profile);
+        auto const label = disk_profile_.kind == tr_disk_profile::Kind::Hdd ?
+            "HDD" :
+            (disk_profile_.kind == tr_disk_profile::Kind::Ssd ? "SSD" : "unknown (64 KiB fallback)");
+        tr_logAddInfoTor(this, fmt::format("Automatic disk profile: {}", label));
+    }
 }
 
 // --- RENAME
@@ -2457,9 +2510,13 @@ void tr_torrent::rename_path_in_session_thread(
 {
     using namespace rename_helpers;
 
-    tr_error_code_t error = 0;
+    tr_error_code_t error = session->disk_cache().flush(id());
+    if (error != 0)
+    {
+        // Preserve the original paths and report the write error below.
+    }
 
-    if (!renameArgsAreValid(this, oldpath, newname))
+    else if (!renameArgsAreValid(this, oldpath, newname))
     {
         error = EINVAL;
     }
@@ -2469,6 +2526,7 @@ void tr_torrent::rename_path_in_session_thread(
     }
     else
     {
+        session->close_torrent_files(id());
         error = renamePath(this, oldpath, newname);
 
         if (error == 0)
@@ -2612,6 +2670,7 @@ tr_bitfield const& tr_torrent::ResumeHelper::blocks() const noexcept
 void tr_torrent::ResumeHelper::load_blocks(tr_bitfield blocks)
 {
     tor_.completion_.set_blocks(std::move(blocks));
+    tor_.interest_revision_.fetch_add(1, std::memory_order_relaxed);
 }
 
 // ---

@@ -2,8 +2,6 @@
    It may be used under GPLv2 (SPDX: GPL-2.0-only).
    License text can be found in the licenses/ folder. */
 
-import { AlertDialog } from './alert-dialog.js';
-
 export const RPC = {
   _DaemonVersion: 'version',
   _DownSpeedLimit: 'speed_limit_down',
@@ -26,15 +24,29 @@ function getResponseParams(response) {
 }
 
 export class Remote {
-  _connection_alert = null;
   _session_id = '';
+  _connection_listeners = new Set();
+  _was_unreachable = false;
 
   // TODO: decouple from controller
   constructor(controller) {
     this._controller = controller;
   }
 
-  sendRequest(data, callback, context) {
+  onConnectionState(callback) {
+    this._connection_listeners.add(callback);
+    callback('connecting');
+    return () => this._connection_listeners.delete(callback);
+  }
+
+  _setConnectionState(state) {
+    for (const callback of this._connection_listeners) {
+      callback(state);
+    }
+  }
+
+  sendRequest(data, callback, context, options = {}) {
+    this._setConnectionState('connecting');
     const headers = new Headers();
     headers.append('cache-control', 'no-cache');
     headers.append('content-type', 'application/json');
@@ -44,10 +56,11 @@ export class Remote {
     }
 
     let response_argument = null;
-    fetch(RPC._Root, {
+    return fetch(RPC._Root, {
       body: JSON.stringify(data),
       headers,
       method: 'POST',
+      signal: AbortSignal.timeout(options.timeout ?? 12_000),
     })
       .then((response) => {
         response_argument = response;
@@ -68,9 +81,9 @@ export class Remote {
           callback.call(context, payload, response_argument);
         }
 
-        if (this._connection_alert) {
-          this._connection_alert.close();
-          this._connection_alert = null;
+        this._setConnectionState('online');
+        if (this._was_unreachable) {
+          this._was_unreachable = false;
           this._controller._initializeTorrents();
         }
       })
@@ -78,18 +91,15 @@ export class Remote {
         if (error.message === Remote._SessionHeader) {
           // copy the session header and try again
           this._session_id = error.header;
-          this.sendRequest(data, callback, context);
-          return;
+          return this.sendRequest(data, callback, context, options);
         }
-        console.trace(error);
-        this._controller.togglePeriodicSessionRefresh(false);
-
-        this._connection_alert = new AlertDialog({
-          heading: 'Connection failed',
-          message:
-            'Could not connect to the server. You may need to reload the page to reconnect.',
-        });
-        this._controller.setCurrentPopup(this._connection_alert);
+        this._was_unreachable = true;
+        this._setConnectionState('offline');
+        if (options.quiet) {
+          return null;
+        }
+        console.warn('Transmission RPC connection failed:', error);
+        return null;
       });
   }
 
@@ -100,7 +110,7 @@ export class Remote {
       jsonrpc: RPC._JsonRpcVersion,
       method: 'session_get',
     };
-    this.sendRequest(o, callback, context);
+    return this.sendRequest(o, callback, context);
   }
 
   checkPort(ip_protocol, callback, context) {
@@ -151,7 +161,7 @@ export class Remote {
       jsonrpc: RPC._JsonRpcVersion,
       method: 'session_stats',
     };
-    this.sendRequest(o, callback, context);
+    return this.sendRequest(o, callback, context);
   }
 
   updateTorrents(torrentIds, fields, callback, context) {
@@ -167,7 +177,7 @@ export class Remote {
     if (torrentIds) {
       o.params.ids = torrentIds;
     }
-    this.sendRequest(o, (response) => {
+    return this.sendRequest(o, (response) => {
       const res = getResponseParams(response);
       callback.call(context, res.torrents, res.removed);
     });

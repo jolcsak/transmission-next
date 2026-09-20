@@ -51,6 +51,7 @@
 #include <fmt/format.h>
 
 #include "libtransmission/error.h"
+#include "libtransmission/security-log.h"
 #include "libtransmission/file.h"
 #include "libtransmission/tr-assert.h"
 #include "libtransmission/tr-macros.h" // TR_UCLIBC_CHECK_VERSION
@@ -437,6 +438,60 @@ char* tr_sys_path_native_separators(char* path)
     return path;
 }
 
+namespace
+{
+// Resolve each component through an already opened directory descriptor.
+// Never check a pathname and subsequently follow it with a plain open().
+int open_secure(std::string_view path, int flags, int permissions)
+{
+    auto fail = [](int dir, int code)
+    {
+        close(dir);
+        if (code == ELOOP || code == ENOTDIR || code == EINVAL)
+            tr_security_log(tr_security_event::FilePath, fmt::format("event=unsafe_file_path_rejected errno={}", code));
+        errno = code;
+        return -1;
+    };
+    int dir = open(path.starts_with('/') ? "/" : ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (dir < 0) return -1;
+    while (!path.empty() && path.front() == '/') path.remove_prefix(1);
+    while (!path.empty())
+    {
+        auto const slash = path.find('/');
+        auto part = std::string{ path.substr(0, slash) };
+        if (part.empty() || part == "." || part == "..") return fail(dir, EINVAL);
+        if (slash == std::string_view::npos)
+        {
+            // Nonblocking prevents a malicious FIFO from hanging the event loop.
+            int fd = openat(dir, part.c_str(), flags | O_NOFOLLOW | O_NONBLOCK, permissions);
+            int code = errno;
+            close(dir);
+            if (fd < 0)
+            {
+                if (code == ELOOP)
+                    tr_security_log(tr_security_event::FilePath, "event=unsafe_file_path_rejected reason=symlink");
+                errno = code;
+                return -1;
+            }
+            struct stat info;
+            if (fstat(fd, &info) != 0 || !S_ISREG(info.st_mode)) return fail(fd, EINVAL);
+            return fd;
+        }
+        int next = openat(dir, part.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        if (next < 0 && errno == ENOENT && (flags & O_CREAT) != 0)
+        {
+            if (mkdirat(dir, part.c_str(), 0777) != 0 && errno != EEXIST) return fail(dir, errno);
+            next = openat(dir, part.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        }
+        if (next < 0) return fail(dir, errno);
+        close(dir);
+        dir = next;
+        path.remove_prefix(slash + 1);
+    }
+    return fail(dir, EINVAL);
+}
+}
+
 tr_sys_file_t tr_sys_file_open(std::string_view path, int const flags, int const permissions, tr_error* error)
 {
     TR_ASSERT((flags & (TR_SYS_FILE_READ | TR_SYS_FILE_WRITE)) != 0);
@@ -492,7 +547,8 @@ tr_sys_file_t tr_sys_file_open(std::string_view path, int const flags, int const
     }
 
     auto const sz_path = tr_pathbuf{ path };
-    tr_sys_file_t const ret = open(sz_path.c_str(), native_flags, permissions);
+    tr_sys_file_t const ret = (flags & TR_SYS_FILE_SECURE) != 0 ?
+        open_secure(path, native_flags, permissions) : open(sz_path.c_str(), native_flags, permissions);
 
     if (ret != TR_BAD_SYS_FILE)
     {

@@ -4,6 +4,7 @@
    License text can be found in the licenses/ folder. */
 
 import { Formatter } from './formatter.js';
+import { VisibleInterval } from './visible-interval.js';
 import {
   Utils,
   setTextContent,
@@ -20,7 +21,7 @@ export class StatisticsDialog extends EventTarget {
     const updateDaemon = () =>
       this.remote.loadDaemonStats((data) => this._update(data.result));
     const delay_msec = 5000;
-    this.interval = setInterval(updateDaemon, delay_msec);
+    this.interval = new VisibleInterval(updateDaemon, delay_msec);
     updateDaemon();
 
     this.elements = StatisticsDialog._create();
@@ -31,7 +32,7 @@ export class StatisticsDialog extends EventTarget {
 
   close() {
     if (!this.closed) {
-      clearInterval(this.interval);
+      this.interval.stop();
       this.elements.root.remove();
       this.dispatchEvent(new Event('close'));
       for (const key of Object.keys(this)) {

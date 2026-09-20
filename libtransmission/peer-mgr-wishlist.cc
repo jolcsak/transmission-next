@@ -21,34 +21,6 @@
 #include "libtransmission/tr-macros.h" // TR_CONSTEXPR_VEC
 #include "libtransmission/types.h"
 
-namespace
-{
-[[nodiscard]] TR_CONSTEXPR_VEC std::vector<tr_block_span_t> make_spans(small::vector<tr_block_index_t> const& blocks)
-{
-    if (std::empty(blocks))
-    {
-        return {};
-    }
-
-    auto spans = std::vector<tr_block_span_t>{};
-    spans.reserve(std::size(blocks));
-    for (auto span_begin = std::begin(blocks), end = std::end(blocks); span_begin != end;)
-    {
-        auto constexpr NotAdjacent = [](tr_block_index_t const lhs, tr_block_index_t const rhs)
-        {
-            return lhs + 1U != rhs;
-        };
-
-        auto const span_end = std::min(std::adjacent_find(span_begin, end, NotAdjacent), std::prev(end));
-        spans.push_back({ .begin = *span_begin, .end = *span_end + 1U });
-
-        span_begin = std::next(span_end);
-    }
-
-    return spans;
-}
-} // namespace
-
 Wishlist::Candidate::Candidate(tr_piece_index_t piece_in, tr_piece_index_t salt_in, Mediator const* mediator)
     : piece{ piece_in }
     , block_span{ mediator->block_span(piece_in) }
@@ -65,6 +37,10 @@ Wishlist::Candidate::Candidate(tr_piece_index_t piece_in, tr_piece_index_t salt_
         {
             unrequested.insert(block);
         }
+        else
+        {
+            has_received_blocks = true;
+        }
     }
 }
 
@@ -79,11 +55,10 @@ std::vector<tr_block_span_t> Wishlist::next(
         return {};
     }
 
-    auto blocks = small::vector<tr_block_index_t>{};
-    blocks.reserve(n_wanted_blocks);
+    auto spans = std::vector<tr_block_span_t>{};
+    size_t n_added = 0;
     for (auto const& candidate : candidates_)
     {
-        auto const n_added = std::size(blocks);
         TR_ASSERT(n_added <= n_wanted_blocks);
 
         // do we have enough?
@@ -100,13 +75,38 @@ std::vector<tr_block_span_t> Wishlist::next(
 
         // walk the blocks in this piece that we don't have or not requested
         auto const n_to_add = std::min(std::size(candidate.unrequested), n_wanted_blocks - n_added);
-        std::copy_n(std::rbegin(candidate.unrequested), n_to_add, std::back_inserter(blocks));
+        auto block = std::rbegin(candidate.unrequested);
+        for (size_t i = 0; i < n_to_add; ++i, ++block)
+        {
+            if (!spans.empty() && spans.back().end == *block)
+            {
+                ++spans.back().end;
+            }
+            else
+            {
+                spans.push_back({ .begin = *block, .end = *block + 1U });
+            }
+        }
+        n_added += n_to_add;
     }
 
-    // Ensure the list of blocks are sorted
-    // The list needs to be unique as well, but that should come naturally
-    std::ranges::sort(blocks);
-    return make_spans(blocks);
+    // Selection above follows exactly the candidate priority order. Candidates
+    // own disjoint block ranges; sort only the runs and merge adjacent ranges.
+    std::ranges::sort(spans, {}, &tr_block_span_t::begin);
+    size_t n_spans = 0;
+    for (auto const span : spans)
+    {
+        if (n_spans != 0 && spans[n_spans - 1].end == span.begin)
+        {
+            spans[n_spans - 1].end = span.end;
+        }
+        else
+        {
+            spans[n_spans++] = span;
+        }
+    }
+    spans.resize(n_spans);
+    return spans;
 }
 
 void Wishlist::on_got_bad_piece(tr_piece_index_t const piece)
@@ -295,6 +295,7 @@ void Wishlist::recalculate_salt()
     for (auto& candidate : candidates_)
     {
         candidate.salt = get_salt(candidate.piece);
+        candidate.is_sequential = mediator_.is_sequential_download();
     }
 
     std::ranges::sort(candidates_);

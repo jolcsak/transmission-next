@@ -1,0 +1,18 @@
+{
+  "lpd_enabled": false,
+  "scrape_paused_torrents_enabled": false,
+  "dht_enabled": true,
+  "pex_enabled": true,
+  "utp_enabled": true,
+  "port_forwarding_enabled": true,
+  "watch_dir_enabled": false,
+  "blocklist_enabled": false,
+  "script_torrent_added_enabled": false,
+  "script_torrent_done_enabled": false,
+  "script_torrent_done_seeding_enabled": false,
+  "alt_speed_time_enabled": false,
+  "rpc_enabled": true,
+  "rpc_bind_address": "127.0.0.1",
+  "rpc_whitelist_enabled": true,
+  "rpc_whitelist": "127.0.0.1,::1"
+}

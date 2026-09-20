@@ -4,9 +4,9 @@
 // License text can be found in the licenses/ folder.
 
 #include <algorithm>
-#include <array>
 #include <cerrno>
 #include <cstddef>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string_view>
@@ -38,8 +38,12 @@ bool read_entire_buf(tr_sys_file_t const fd, uint64_t file_offset, std::span<uin
     {
         auto n_read = uint64_t{};
 
-        if (!tr_sys_file_read_at(fd, std::data(buf), std::size(buf), file_offset, &n_read, &error))
+        if (!tr_sys_file_read_at(fd, std::data(buf), std::size(buf), file_offset, &n_read, &error) || n_read == 0U)
         {
+            if (!error)
+            {
+                error.set_from_errno(EIO);
+            }
             return false;
         }
 
@@ -56,8 +60,12 @@ bool write_entire_buf(tr_sys_file_t const fd, uint64_t file_offset, std::span<ui
     {
         auto n_written = uint64_t{};
 
-        if (!tr_sys_file_write_at(fd, std::data(buf), std::size(buf), file_offset, &n_written, &error))
+        if (!tr_sys_file_write_at(fd, std::data(buf), std::size(buf), file_offset, &n_written, &error) || n_written == 0U)
         {
+            if (!error)
+            {
+                error.set_from_errno(EIO);
+            }
             return false;
         }
 
@@ -201,34 +209,25 @@ std::optional<tr_sha1_digest_t> recalculate_hash(tr_torrent const& tor, tr_piece
     TR_ASSERT(piece < tor.piece_count());
 
     auto sha = tr_sha1{};
-    auto buffer = std::array<uint8_t, tr_block_info::BlockSize>{};
+    auto constexpr BufferSize = size_t{ 256U * 1024U };
+    auto const buffer_size = std::min<size_t>(tor.piece_size(piece), BufferSize);
+    auto buffer = std::make_unique_for_overwrite<uint8_t[]>(buffer_size);
     auto& open_files = tor.session->openFiles();
 
     auto const [begin_byte, end_byte] = tor.block_info().byte_span_for_piece(piece);
-    auto const [begin_block, end_block] = tor.block_span_for_piece(piece);
-    [[maybe_unused]] auto n_bytes_checked = size_t{};
-    for (auto block = begin_block; block < end_block; ++block)
+    for (auto byte = begin_byte; byte < end_byte;)
     {
-        auto const block_loc = tor.block_loc(block);
-        auto const block_len = tor.block_size(block);
-        auto contents = std::span{ std::data(buffer), block_len };
-        if (auto const success = tr_ioRead(tor, open_files, block_loc, contents) == 0; !success)
+        auto const n_bytes = static_cast<size_t>(std::min<uint64_t>(end_byte - byte, buffer_size));
+        auto const contents = std::span{ buffer.get(), n_bytes };
+        if (tr_ioRead(tor, open_files, tor.byte_loc(byte), contents) != 0)
         {
             return {};
         }
 
-        // Handle edge cases where blocks aren't perfectly aligned on piece boundaries.
-        // `std::max` ensures we don't start hashing before the piece begins (for the first block).
-        // `std::min` ensures we don't hash past the end of the piece (for the last block).
-        auto const start = std::max(begin_byte, block_loc.byte);
-        auto const end = std::min(end_byte, block_loc.byte + block_len);
-        auto const piece_data = contents.subspan(start - block_loc.byte, static_cast<size_t>(end - start));
-
-        sha.add(std::data(piece_data), std::size(piece_data));
-        n_bytes_checked += std::size(piece_data);
+        sha.add(std::data(contents), std::size(contents));
+        byte += n_bytes;
     }
 
-    TR_ASSERT(tor.piece_size(piece) == n_bytes_checked);
     return sha.finish();
 }
 

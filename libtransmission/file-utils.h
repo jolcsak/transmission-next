@@ -27,6 +27,9 @@ bool tr_file_move(std::string_view oldpath, std::string_view newpath, bool allow
 
 bool tr_file_save(std::string_view filename, std::string_view contents, tr_error* error = nullptr);
 
+// Preserve an existing, byte-identical file without a temporary write or rename.
+bool tr_file_save_if_changed(std::string_view filename, std::string_view contents, tr_error* error = nullptr);
+
 template<typename ContiguousRange>
 constexpr auto tr_file_save(std::string_view filename, ContiguousRange const& x, tr_error* error = nullptr)
 {

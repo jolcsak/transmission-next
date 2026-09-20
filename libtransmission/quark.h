@@ -73,6 +73,7 @@ enum // NOLINT(performance-enum-size)
     TR_KEY_anti_brute_force_enabled, /* rpc, settings */
     TR_KEY_anti_brute_force_threshold, /* rpc, settings */
     TR_KEY_arguments, /* rpc */
+    TR_KEY_auto_disk_profile_enabled,
     TR_KEY_availability, // rpc
     TR_KEY_bandwidth_priority_kebab_APICOMPAT,
     TR_KEY_bandwidth_priority_camel_APICOMPAT,
@@ -142,6 +143,7 @@ enum // NOLINT(performance-enum-size)
     TR_KEY_details_window_width,
     TR_KEY_dht_enabled_kebab_APICOMPAT,
     TR_KEY_dht_enabled,
+    TR_KEY_disk_write_batch_size_kib,
     TR_KEY_dnd,
     TR_KEY_done_date_kebab_APICOMPAT,
     TR_KEY_done_date_camel_APICOMPAT,
@@ -384,6 +386,7 @@ enum // NOLINT(performance-enum-size)
     TR_KEY_peer_is_choked_camel_APICOMPAT,
     TR_KEY_peer_is_interested_camel_APICOMPAT,
     TR_KEY_peer_congestion_algorithm,
+    TR_KEY_peer_connection_attempts_per_second,
     TR_KEY_peer_id,
     TR_KEY_peer_is_choked,
     TR_KEY_peer_is_interested,

@@ -43,6 +43,7 @@
 #include "libtransmission/bandwidth.h"
 #include "libtransmission/blocklist.h"
 #include "libtransmission/config-dir-lock.h"
+#include "libtransmission/disk-cache.h"
 #include "libtransmission/interned-string.h"
 #include "libtransmission/ip-cache.h"
 #include "libtransmission/local-data.h"
@@ -653,6 +654,14 @@ public:
         return open_files_;
     }
 
+    [[nodiscard]] tr_disk_cache& disk_cache() noexcept
+    {
+        return disk_cache_;
+    }
+    [[nodiscard]] tr_disk_cache const& disk_cache() const noexcept
+    {
+        return disk_cache_;
+    }
     void close_torrent_files(tr_torrent_id_t tor_id) noexcept;
     void close_torrent_file(tr_torrent const& tor, tr_file_index_t file_num) noexcept;
 
@@ -744,12 +753,12 @@ public:
         return session_stats_;
     }
 
-    constexpr void add_uploaded(uint32_t n_bytes) noexcept
+    void add_uploaded(uint32_t n_bytes) noexcept
     {
         stats().add_uploaded(n_bytes);
     }
 
-    constexpr void add_downloaded(uint32_t n_bytes) noexcept
+    void add_downloaded(uint32_t n_bytes) noexcept
     {
         stats().add_downloaded(n_bytes);
     }
@@ -947,6 +956,7 @@ public:
     }
 
     [[nodiscard]] size_t count_queue_free_slots(tr_direction dir) const noexcept;
+    [[nodiscard]] size_t count_disk_queue_free_slots(tr_torrent const& candidate, tr_direction dir) const noexcept;
 
     [[nodiscard]] bool has_ip_protocol(tr_address_type type) const noexcept
     {
@@ -1321,6 +1331,7 @@ private:
     std::unique_ptr<tr_web> web_ = tr_web::create(this->web_mediator_);
 
     // depends-on: timer_maker_, blocklists_, top_bandwidth_, utp_context, torrents_, web_
+    tr_disk_cache disk_cache_{ *this };
     std::unique_ptr<struct tr_peerMgr, void (*)(struct tr_peerMgr*)> peer_mgr_;
 
     // depends-on: peer_mgr_, advertised_peer_port_, torrents_

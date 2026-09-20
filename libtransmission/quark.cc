@@ -62,6 +62,7 @@ auto constexpr MyStatic = std::array<std::string_view, TR_N_KEYS>{
     "anti_brute_force_enabled"sv, // rpc, rpc server settings
     "anti_brute_force_threshold"sv, // rpc server settings
     "arguments"sv, // json-rpc
+    "auto_disk_profile_enabled"sv, // tr_session::Settings
     "availability"sv, // rpc
     "bandwidth-priority"sv, // .resume
     "bandwidthPriority"sv, // rpc
@@ -131,6 +132,7 @@ auto constexpr MyStatic = std::array<std::string_view, TR_N_KEYS>{
     "details_window_width"sv, // gtk app
     "dht-enabled"sv, // daemon, rpc, tr_session::Settings
     "dht_enabled"sv, // daemon, rpc, tr_session::Settings
+    "disk_write_batch_size_kib"sv, // tr_session::Settings
     "dnd"sv, // .resume
     "done-date"sv, // .resume
     "doneDate"sv, // rpc
@@ -373,6 +375,7 @@ auto constexpr MyStatic = std::array<std::string_view, TR_N_KEYS>{
     "peerIsChoked"sv, // rpc
     "peerIsInterested"sv, // rpc
     "peer_congestion_algorithm"sv, // tr_session::Settings
+    "peer_connection_attempts_per_second"sv, // tr_session::Settings
     "peer_id"sv, // rpc
     "peer_is_choked"sv, // rpc
     "peer_is_interested"sv, // rpc

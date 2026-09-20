@@ -22,6 +22,9 @@ target_sources(libtransmission-test
         copy-test.cc
         crypto-test.cc
         dht-test.cc
+        disk-optimization-test.cc
+        disk-cache-test.cc
+        disk-profile-test.cc
         error-test.cc
         env-test.cc
         file-piece-map-test.cc
@@ -38,7 +41,9 @@ target_sources(libtransmission-test
         makemeta-test.cc
         move-test.cc
         net-test.cc
+        network-optimization-test.cc
         open-files-test.cc
+        optimization-test.cc
         peer-mgr-wishlist-test.cc
         peer-msgs-test.cc
         platform-test.cc
@@ -50,6 +55,7 @@ target_sources(libtransmission-test
         session-alt-speeds-test.cc
         session-test.cc
         settings-test.cc
+        stats-test.cc
         strbuf-test.cc
         string-utils-test.cc
         subprocess-test-script.cmd

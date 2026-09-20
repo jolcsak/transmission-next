@@ -33,6 +33,33 @@ TEST_F(SettingsTest, canInstantiate)
     EXPECT_FALSE(std::empty(map));
 }
 
+TEST_F(SettingsTest, ConnectionAttemptRateRoundTrip)
+{
+    auto settings = tr_session::Settings{};
+    EXPECT_EQ(18U, settings.peer_connection_attempts_per_second);
+    for (auto const rate : { 0U, 1U, 4U, 18U })
+    {
+        settings.peer_connection_attempts_per_second = rate;
+        auto restored = tr_session::Settings{};
+        restored.load(tr_variant{ settings.save() });
+        EXPECT_EQ(rate, restored.peer_connection_attempts_per_second);
+    }
+}
+
+TEST_F(SettingsTest, DiskWriteBatchSizeRoundTripAndBounds)
+{
+    auto settings = tr_session::Settings{};
+    EXPECT_EQ(64U * 1024U, settings.disk_write_batch_size());
+    for (auto const size : { 0U, 32U, 64U, 128U, 256U, 4096U })
+    {
+        settings.disk_write_batch_size_kib = size;
+        auto restored = tr_session::Settings{};
+        restored.load(tr_variant{ settings.save() });
+        EXPECT_EQ(size, restored.disk_write_batch_size_kib);
+        EXPECT_EQ(std::clamp(size, 64U, 256U) * 1024U, restored.disk_write_batch_size());
+    }
+}
+
 TEST_F(SettingsTest, canLoadBools)
 {
     static auto constexpr Key = TR_KEY_seed_queue_enabled;
