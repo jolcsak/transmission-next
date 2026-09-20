@@ -3,6 +3,7 @@
 // or any future license endorsed by Mnemosyne LLC.
 // License text can be found in the licenses/ folder.
 
+#include <filesystem>
 #include <fstream>
 #include <map>
 #include <memory>
@@ -57,6 +58,14 @@ struct TorrentQueueTest : public tr::test::SandboxedTest
         "ubuntu-20.04.4-desktop-amd64.iso.torrent"sv,
     };
 };
+
+TEST_F(TorrentQueueTest, missingQueueFileIsAnEmptyQueue)
+{
+    auto queue = tr_torrent_queue{ mediator_ };
+
+    EXPECT_FALSE(std::filesystem::exists(sandboxDir() + "/queue.json"));
+    EXPECT_TRUE(queue.from_file().empty());
+}
 
 TEST_F(TorrentQueueTest, addRemoveToFromQueue)
 {

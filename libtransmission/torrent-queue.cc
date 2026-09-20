@@ -9,6 +9,8 @@
 #include <string_view>
 #include <vector>
 
+#include "libtransmission/error.h"
+#include "libtransmission/file.h"
 #include "libtransmission/torrent-queue.h"
 #include "libtransmission/tr-strbuf.h"
 #include "libtransmission/variant.h"
@@ -124,7 +126,17 @@ bool tr_torrent_queue::to_file()
 
 std::vector<std::string> tr_torrent_queue::from_file()
 {
-    auto top = tr_variant_serde::json().parse_file(get_file_path(mediator_.config_dir()));
+    auto const filename = get_file_path(mediator_.config_dir());
+    auto error = tr_error{};
+    if (!tr_sys_path_get_info(filename, 0, &error) && tr_error_is_enoent(error.code()))
+    {
+        // queue.json is optional on first start and when no queue has been
+        // persisted yet. Other filesystem errors are left to parse_file(),
+        // which reports them normally.
+        return {};
+    }
+
+    auto top = tr_variant_serde::json().parse_file(filename);
     if (!top)
     {
         return {};
