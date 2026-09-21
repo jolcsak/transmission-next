@@ -1,0 +1,36 @@
+services:
+  transmission:
+    image: jolcsak/transmission-next:2026.09.20.13-amd64
+    platform: linux/amd64
+    container_name: jolcsak-transmission-next
+    restart: unless-stopped
+    stop_grace_period: 120s
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+    security_opt:
+      - apparmor:unconfined
+    environment:
+      VPN_ENABLED: "true"
+      RPC_USERNAME: "admin"
+      # Supply the existing password via the DSM project's environment/.env file.
+      RPC_PASSWORD: "${RPC_PASSWORD:?Set the existing RPC password (at least 8 characters)}"
+      TRANSMISSION_CONFIG_DIR: /config
+      TRANSMISSION_WEB_HOME: /opt/transmission/share/transmission/public_html
+    ports:
+      - "9091:9091" # direct HTTPS
+      - "9092:9092" # HTTP backend for the DSM reverse proxy
+    volumes:
+      - /volume1/docker/transmission-next/config:/config
+      - /volume1/downloads:/downloads
+      - /volume1/movies:/movies
+      - /volume1/music:/music
+      - /volume1/series:/series
+    tmpfs:
+      - /run:rw,nosuid,nodev,size=16m,mode=755
+      - /tmp:rw,nosuid,nodev,size=16m,mode=1777
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
