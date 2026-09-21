@@ -37,6 +37,8 @@ A `config` és `downloads` könyvtár tartós adatokat tárol; frissítéskor ta
 VPN-es telepítéshez külön példa: **compose.vpn.yaml**. A kezelt VPN-hez szükséges:
 NET_ADMIN és SYS_ADMIN capability, `/dev/net/tun`, IPv4 forwarding, és a hálózati
 névterekhez szükséges mount-engedély (a példa AppArmor unconfined beállítást használ).
+Az újabb kernel nftables tűzfalát használja, a DSM régebbi (például 4.4-es)
+kernelén pedig automatikusan az azonos célú, alapból tiltó iptables-legacy szabályokra vált.
 Nincs privileged mód, host network, host PID vagy Docker socket mount.
 A supervisor rootként kezeli a hálózatot; a daemon és a telemetria UID/GID 1000-ként,
 eldobott capabilitykkel fut. SYS_ADMIN széles jogosultság, megbízható image-hez használd.

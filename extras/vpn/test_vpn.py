@@ -203,6 +203,22 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(output.count('ct state established accept'), 1)
         self.assertIn('tcp sport 9091 ct state established accept', output)
 
+    def test_legacy_firewall_is_fail_closed_and_endpoint_scoped(self):
+        config, _ = self.load()
+        profile = dataclasses.make_dataclass('Profile', [('protocol', str), ('port', int)])('udp', 1194)
+        rules = controller.legacy_namespace_commands(config, profile, '192.0.2.2')
+        self.assertEqual(rules[:6], [
+            (tool, '-P', chain, 'DROP')
+            for tool in ('iptables-legacy', 'ip6tables-legacy')
+            for chain in ('OUTPUT', 'INPUT', 'FORWARD')
+        ])
+        output = [rule for rule in rules if rule[0] == 'iptables-legacy' and rule[2] == 'OUTPUT']
+        uplink = [rule for rule in output if 'uplink' in rule]
+        self.assertEqual(len(uplink), 2)
+        self.assertTrue(all('-d' in rule and ('192.0.2.2' in rule or config['host_ip'] in rule)
+                            for rule in uplink))
+        self.assertEqual(controller.legacy_nat_command(config, profile, '192.0.2.2', '-D')[3], '-D')
+
     def test_existing_legacy_settings_keep_authentication(self):
         config, _ = self.load()
         user = pwd.getpwuid(os.getuid())

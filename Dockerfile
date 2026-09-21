@@ -48,7 +48,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PYTHONPATH=/opt/python \
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libcurl4t64 libssl3t64 libevent-core-2.1-7t64 libevent-extra-2.1-7t64 \
     libdeflate0 libpsl5t64 libstdc++6 ca-certificates \
-    python3 openvpn iproute2 nftables util-linux nginx-light openssl tini \
+    python3 openvpn iproute2 nftables iptables util-linux nginx-light openssl tini \
     && rm -rf /var/lib/apt/lists/* /var/log/apt/* \
     && userdel -r ubuntu && groupadd -g 1000 transmission \
     && useradd -u 1000 -g transmission -d /config -s /usr/sbin/nologin transmission \

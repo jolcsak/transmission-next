@@ -221,6 +221,42 @@ def nat_rules(config, profile, endpoint):
 '''
 
 
+def legacy_namespace_commands(config, profile, endpoint):
+    """Equivalent fail-closed rules for DSM kernels without nf_tables support."""
+    host, port = config['host_ip'], str(config['rpc_port'])
+    endpoint = str(ipaddress.IPv4Address(endpoint))
+    proto, vpn_port = profile.protocol, str(profile.port)
+    return [
+        ('iptables-legacy', '-P', 'OUTPUT', 'DROP'),
+        ('iptables-legacy', '-P', 'INPUT', 'DROP'),
+        ('iptables-legacy', '-P', 'FORWARD', 'DROP'),
+        ('ip6tables-legacy', '-P', 'OUTPUT', 'DROP'),
+        ('ip6tables-legacy', '-P', 'INPUT', 'DROP'),
+        ('ip6tables-legacy', '-P', 'FORWARD', 'DROP'),
+        ('iptables-legacy', '-A', 'OUTPUT', '-o', 'lo', '-j', 'ACCEPT'),
+        ('iptables-legacy', '-A', 'OUTPUT', '-o', 'tun0', '-j', 'ACCEPT'),
+        ('iptables-legacy', '-A', 'OUTPUT', '-o', 'uplink', '-d', endpoint,
+         '-p', proto, '--dport', vpn_port, '-j', 'ACCEPT'),
+        ('iptables-legacy', '-A', 'OUTPUT', '-o', 'uplink', '-d', host,
+         '-p', 'tcp', '--sport', port, '-m', 'conntrack', '--ctstate', 'ESTABLISHED', '-j', 'ACCEPT'),
+        ('iptables-legacy', '-A', 'INPUT', '-i', 'lo', '-j', 'ACCEPT'),
+        ('iptables-legacy', '-A', 'INPUT', '-i', 'tun0', '-p', 'tcp', '--dport', port, '-j', 'DROP'),
+        ('iptables-legacy', '-A', 'INPUT', '-i', 'tun0', '-j', 'ACCEPT'),
+        ('iptables-legacy', '-A', 'INPUT', '-i', 'uplink', '-s', endpoint,
+         '-p', proto, '--sport', vpn_port, '-m', 'conntrack', '--ctstate', 'ESTABLISHED', '-j', 'ACCEPT'),
+        ('iptables-legacy', '-A', 'INPUT', '-i', 'uplink', '-s', host,
+         '-p', 'tcp', '--dport', port, '-j', 'ACCEPT'),
+        ('iptables-legacy', '-A', 'INPUT', '-i', 'uplink', '-p', 'icmp',
+         '-m', 'conntrack', '--ctstate', 'RELATED', '-j', 'ACCEPT'),
+    ]
+
+
+def legacy_nat_command(config, profile, endpoint, action='-A'):
+    return ('iptables-legacy', '-t', 'nat', action, 'POSTROUTING',
+            '-s', config['guest_ip'], '-d', str(ipaddress.IPv4Address(endpoint)),
+            '-p', profile.protocol, '--dport', str(profile.port), '-j', 'MASQUERADE')
+
+
 class Supervisor:
     def __init__(self, config, user, profile, *, probe=False):
         self.probe = probe
@@ -247,6 +283,7 @@ class Supervisor:
         # OpenVPN profile and credentials never leave the private runtime area.
         self.server_endpoint = None
         self.tunnel_ipv4 = None
+        self.firewall_backend = None
 
     def public_status(self, state):
         status = {
@@ -414,7 +451,13 @@ class Supervisor:
         command('ip', 'netns', 'add', NS)
         self.owned_ns = True
         # Firewall is installed before the underlay link or any service is started.
-        command('ip', 'netns', 'exec', NS, 'nft', '-f', '-', input=namespace_rules(c, self.profile, endpoint))
+        if command('ip', 'netns', 'exec', NS, 'nft', 'list', 'ruleset', check=False).returncode == 0:
+            self.firewall_backend = 'nft'
+            command('ip', 'netns', 'exec', NS, 'nft', '-f', '-', input=namespace_rules(c, self.profile, endpoint))
+        else:
+            self.firewall_backend = 'iptables-legacy'
+            for rule in legacy_namespace_commands(c, self.profile, endpoint):
+                command('ip', 'netns', 'exec', NS, *rule)
         command('ip', 'link', 'add', HOST_LINK, 'type', 'veth', 'peer', 'name', 'uplink', 'netns', NS)
         self.owned_link = True
         command('ip', 'addr', 'add', c['host_ip'] + '/30', 'dev', HOST_LINK)
@@ -423,7 +466,10 @@ class Supervisor:
         command('ip', '-n', NS, 'link', 'set', 'lo', 'up')
         command('ip', '-n', NS, 'link', 'set', 'uplink', 'up')
         command('ip', '-n', NS, 'route', 'add', 'default', 'via', c['host_ip'])
-        command('nft', '-f', '-', input=nat_rules(c, self.profile, endpoint))
+        if self.firewall_backend == 'nft':
+            command('nft', '-f', '-', input=nat_rules(c, self.profile, endpoint))
+        else:
+            command(*legacy_nat_command(c, self.profile, endpoint))
         self.owned_nat = True
         RESOLVER.mkdir(mode=0o755, parents=True)
         self.owned_resolver = True
@@ -626,7 +672,10 @@ class Supervisor:
         if self.owned_link:
             command('ip', 'link', 'delete', HOST_LINK, check=False)
         if self.owned_nat:
-            command('nft', 'delete', 'table', 'ip', TABLE, check=False)
+            if self.firewall_backend == 'nft':
+                command('nft', 'delete', 'table', 'ip', TABLE, check=False)
+            else:
+                command(*legacy_nat_command(self.config, self.profile, self.server_endpoint, '-D'), check=False)
         if self.owned_ns:
             command('ip', 'netns', 'delete', NS, check=False)
         if self.owned_resolver:
